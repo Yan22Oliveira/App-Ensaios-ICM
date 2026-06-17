@@ -1,0 +1,102 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+
+    // -------- Helpers --------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(db)/documents/users/$(request.auth.uid));
+    }
+
+    function isActive() {
+      return isSignedIn() && userDoc().data.active == true;
+    }
+
+    function role() {
+      return isSignedIn() ? userDoc().data.role : "readonly";
+    }
+
+    function userRegionId() { return userDoc().data.regionId; }
+    function userAreaId()   { return userDoc().data.areaId; }
+    function userPoloId()   { return userDoc().data.poloId; }
+
+    // data = resource.data ou request.resource.data (dependendo do uso)
+    function canSeeRehearsal(data) {
+      return isActive() && (
+        role() == 'admin' ||
+        // Maanaim: pode ver ensaios do próprio maanaim + regiões/áreas/polos abaixo.
+        // (no app, o id do maanaim fica em user.regionId)
+        (role() == 'maanaim' && (
+          (data.level == 'maanaim' && data.regionId == userRegionId()) ||
+          (data.level in ['region','area','polo'] && exists(/databases/$(db)/documents/maanains/$(userRegionId())/regions/$(data.regionId)))
+        )) ||
+
+        // Região: pode ver ensaios da região + áreas + polos dessa região
+        (role() == 'region'  && data.regionId == userRegionId() && (data.level in ['region','area','polo'])) ||
+
+        // Área: pode ver ensaios da área + polos dessa área
+        (role() == 'area'    && data.areaId == userAreaId() && (data.level in ['area','polo'])) ||
+
+        // Polo: só ensaios do polo
+        (role() == 'polo'    && data.level == 'polo'   && data.poloId   == userPoloId())   ||
+
+        (role() == 'readonly' && (
+          (data.level == 'polo'   && data.poloId   == userPoloId()) ||
+          (data.level == 'area'   && data.areaId   == userAreaId()) ||
+          (data.level == 'region' && data.regionId == userRegionId())
+        ))
+      );
+    }
+
+    // -------- Collections --------
+
+    match /users/{uid} {
+      // o próprio usuário pode ler seu perfil
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      // admin pode criar/atualizar perfil (ex.: ao aprovar solicitação de acesso)
+      allow create, update: if isActive() && role() == 'admin';
+      allow delete: if false;
+    }
+
+    match /rehearsals/{id} {
+      // leitura respeitando escopo
+      allow read: if canSeeRehearsal(resource.data);
+
+      // criação/edição/deleção: valida o NOVO conteúdo no escopo
+      allow create, update, delete: if canSeeRehearsal(request.resource.data);
+    }
+
+    match /people/{id} {
+      // leitura para usuários ativos (se quiser, aplique escopo por region/area/polo do doc)
+      allow read: if isActive();
+      // ajuste se quiser restringir por papel
+      allow create, update, delete: if isActive();
+    }
+
+    match /attendance/{id} {
+      // leitura para usuários ativos; você pode cruzar escopo pelo rehearsalId via rules mais avançadas
+      allow read: if isActive();
+      allow create, update: if isActive();
+      allow delete: if isActive() && (role() in ['admin','region','area','polo']);
+    }
+
+    match /regions/{id} { allow read: if isActive(); }
+    match /areas/{id}   { allow read: if isActive(); }
+    match /polos/{id}   { allow read: if isActive(); }
+    // maanains: leitura para qualquer usuário autenticado (evita permission-denied antes do perfil estar ativo)
+    match /maanains/{id} { allow read: if isSignedIn(); }
+    match /maanains/{maanaimId}/regions/{id} { allow read: if isSignedIn(); }
+
+    match /roles/{id} { allow read: if isSignedIn(); }
+
+    match /accessRequests/{id} {
+      // aberto para o wizard de solicitação
+      allow create: if true;
+      // leitura/alteração somente por admins
+      allow read, update, delete: if isActive() && role() == 'admin';
+    }
+  }
+}

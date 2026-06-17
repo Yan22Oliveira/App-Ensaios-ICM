@@ -1,0 +1,9 @@
+export 'admin/admin.dart';
+export 'attendance/attendance.dart';
+export 'auth/auth.dart';
+export 'home/home.dart';
+export 'people/people.dart';
+export 'profile/profile.dart';
+export 'rehearsals/rehearsals.dart';
+export 'reports/reports.dart';
+export 'shared/shared.dart';

@@ -1,0 +1,37 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "class-attendance-8e791",
+          "appId": "1:381479615208:android:03439acf5c4865e907275d",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "ios": {
+        "default": {
+          "projectId": "class-attendance-8e791",
+          "appId": "1:381479615208:ios:b2cf6295ad45f05207275d",
+          "uploadDebugSymbols": false,
+          "fileOutput": "ios/Runner/GoogleService-Info.plist"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "class-attendance-8e791",
+          "configurations": {
+            "android": "1:381479615208:android:03439acf5c4865e907275d",
+            "ios": "1:381479615208:ios:b2cf6295ad45f05207275d",
+            "web": "1:381479615208:web:09f50f2f58e090fb07275d"
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "database": "(default)",
+    "location": "southamerica-east1",
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  }
+}
