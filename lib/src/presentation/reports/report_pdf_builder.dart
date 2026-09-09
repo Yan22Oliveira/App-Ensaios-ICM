@@ -23,11 +23,14 @@ class ReportPdfBuilder {
   final ReportsState state;
   final GeoNameResolver geo;
   final UserProfile? profile;
+  /// Relatórios textuais dos eventos do período (anexo nas últimas páginas).
+  final List<(Rehearsal, EventReport)> eventReports;
 
   const ReportPdfBuilder({
     required this.state,
     required this.geo,
     this.profile,
+    this.eventReports = const [],
   });
 
   Future<Uint8List> build() async {
@@ -37,10 +40,10 @@ class ReportPdfBuilder {
 
     final generatedAt = DateTime.now();
     final doc = pw.Document(
-      title: 'Relatório de Presença — Ensaios ICM',
-      author: profile?.displayName ?? 'Ensaios ICM',
-      creator: 'Ensaios ICM',
-      subject: 'Relatório de presença em ensaios',
+      title: 'Relatório de Presença — Frequência ICM',
+      author: profile?.displayName ?? 'Frequência ICM',
+      creator: 'Frequência ICM',
+      subject: 'Relatório de presença em eventos',
     );
 
     doc.addPage(
@@ -112,7 +115,7 @@ class ReportPdfBuilder {
                     crossAxisAlignment: pw.CrossAxisAlignment.start,
                     children: [
                       pw.Text(
-                        'Ensaios ICM',
+                        'Frequência ICM',
                         style: pw.TextStyle(
                           fontSize: 13,
                           fontWeight: pw.FontWeight.bold,
@@ -207,8 +210,8 @@ class ReportPdfBuilder {
     final metaRows = <(String, String)>[
       if (filters.range != null)
         ('Período', '${_fmtDate(filters.range!.start)} a ${_fmtDate(filters.range!.end)}'),
-      if (filters.level != null)
-        ('Tipo de ensaio', _levelLabel(filters.level!)),
+      if (filters.eventType != null)
+        ('Tipo de evento', filters.eventType!.label),
       if (filters.regionId != null)
         ('Região', geo.regionName(filters.regionId!) ?? filters.regionId!),
       if (filters.areaId != null)
@@ -230,7 +233,7 @@ class ReportPdfBuilder {
       return [
         _fmtDate(r.dateTime),
         _fmtTime(r.dateTime),
-        _levelLabel(r.level),
+        r.eventType.label,
         '${r.place ?? '—'} • $loc',
         '${it.present}',
         '${it.unjustified}',
@@ -254,16 +257,16 @@ class ReportPdfBuilder {
       _sectionTitle('Visão Geral', 'Indicadores consolidados do período'),
       pw.SizedBox(height: 6),
       _kpiRow([
-        _kpi('Ensaios totais', '${s.totalRehearsals}', _PdfPalette.primary),
+        _kpi('Eventos totais', '${s.totalRehearsals}', _PdfPalette.primary),
         _kpi('Presentes', _pct(s.attendanceRate), _PdfPalette.success),
         _kpi('Justificadas', _pct(s.justificationRate), _PdfPalette.warning),
         _kpi('Membros c/ registro', '${s.peopleCovered}', _PdfPalette.accentPurple),
       ]),
       pw.SizedBox(height: 14),
-      _sectionTitle('Por Ensaio', '${s.byRehearsal.length} ensaio(s) no período'),
+      _sectionTitle('Por Evento', '${s.byRehearsal.length} evento(s) no período'),
       pw.SizedBox(height: 5),
       if (rowsReh.isEmpty)
-        _emptyState('Nenhum ensaio encontrado para os filtros selecionados.')
+        _emptyState('Nenhum evento encontrado para os filtros selecionados.')
       else
         _table(headerReh, rowsReh),
       pw.SizedBox(height: 14),
@@ -284,6 +287,18 @@ class ReportPdfBuilder {
           },
           centerColumns: const {1, 2, 3, 4},
         ),
+      if (eventReports.isNotEmpty) ...[
+        pw.NewPage(),
+        _sectionTitle(
+          'Relatórios dos Eventos',
+          '${eventReports.length} relatório(s) textual(is) do período',
+        ),
+        pw.SizedBox(height: 8),
+        for (var i = 0; i < eventReports.length; i++) ...[
+          if (i > 0) pw.SizedBox(height: 14),
+          _eventReportBlock(eventReports[i].$1, eventReports[i].$2),
+        ],
+      ],
     ];
   }
 
@@ -546,6 +561,132 @@ class ReportPdfBuilder {
     );
   }
 
+  pw.Widget _eventReportBlock(Rehearsal event, EventReport report) {
+    final place = [
+      if ((event.place ?? '').trim().isNotEmpty) event.place!.trim(),
+      geo.levelName(event),
+    ].join(' • ');
+    final title = report.title.trim().isEmpty ? event.displayTitle : report.title.trim();
+    final updated =
+        'Última atualização em ${_fmtDate(report.updatedAt)} às ${_fmtTime(report.updatedAt)}'
+        '${(report.updatedByName ?? '').trim().isNotEmpty ? ' por ${report.updatedByName!.trim()}' : ''}';
+
+    return pw.Container(
+      padding: const pw.EdgeInsets.all(12),
+      decoration: pw.BoxDecoration(
+        color: PdfColors.white,
+        borderRadius: pw.BorderRadius.circular(8),
+        border: pw.Border.all(color: _PdfPalette.border),
+      ),
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.Row(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Expanded(
+                child: pw.Text(
+                  title,
+                  style: pw.TextStyle(
+                    fontSize: 12,
+                    fontWeight: pw.FontWeight.bold,
+                    color: _PdfPalette.textDark,
+                  ),
+                ),
+              ),
+              pw.SizedBox(width: 8),
+              pw.Text(
+                report.status.label,
+                style: pw.TextStyle(
+                  fontSize: 8,
+                  fontWeight: pw.FontWeight.bold,
+                  color: report.status == EventReportStatus.finalized
+                      ? _PdfPalette.success
+                      : _PdfPalette.warning,
+                ),
+              ),
+            ],
+          ),
+          pw.SizedBox(height: 4),
+          pw.Text(
+            '${event.eventType.label}  •  ${_fmtDate(event.dateTime)}  •  ${_fmtTime(event.dateTime)}',
+            style: pw.TextStyle(fontSize: 8, color: _PdfPalette.textMuted),
+          ),
+          pw.Text(
+            place,
+            style: pw.TextStyle(fontSize: 8, color: _PdfPalette.textMuted),
+          ),
+          if ((report.responsible ?? '').trim().isNotEmpty) ...[
+            pw.SizedBox(height: 4),
+            _pdfMeta('Responsáveis', report.responsible!.trim()),
+          ],
+          if (report.overview.trim().isNotEmpty) ...[
+            pw.SizedBox(height: 10),
+            _pdfHeading('1. Panorama Geral'),
+            pw.SizedBox(height: 4),
+            _pdfBody(report.overview.trim()),
+          ],
+          if (report.conclusion.trim().isNotEmpty) ...[
+            pw.SizedBox(height: 10),
+            _pdfHeading('2. Conclusão'),
+            pw.SizedBox(height: 4),
+            _pdfBody(report.conclusion.trim()),
+          ],
+          if ((report.notes ?? '').trim().isNotEmpty) ...[
+            pw.SizedBox(height: 10),
+            _pdfHeading('Observações'),
+            pw.SizedBox(height: 4),
+            _pdfBody(report.notes!.trim()),
+          ],
+          pw.SizedBox(height: 8),
+          pw.Text(
+            updated,
+            style: pw.TextStyle(fontSize: 7, color: _PdfPalette.textMuted),
+          ),
+        ],
+      ),
+    );
+  }
+
+  pw.Widget _pdfHeading(String text) {
+    return pw.Text(
+      text,
+      style: pw.TextStyle(
+        fontSize: 10,
+        fontWeight: pw.FontWeight.bold,
+        color: _PdfPalette.primary,
+      ),
+    );
+  }
+
+  pw.Widget _pdfBody(String text) {
+    return pw.Text(
+      text,
+      style: pw.TextStyle(fontSize: 9, color: _PdfPalette.textDark, lineSpacing: 2),
+    );
+  }
+
+  pw.Widget _pdfMeta(String label, String value) {
+    return pw.RichText(
+      text: pw.TextSpan(
+        children: [
+          pw.TextSpan(
+            text: '$label: ',
+            style: pw.TextStyle(
+              fontSize: 8,
+              fontWeight: pw.FontWeight.bold,
+              color: _PdfPalette.textDark,
+            ),
+          ),
+          pw.TextSpan(
+            text: value,
+            style: pw.TextStyle(fontSize: 8, color: _PdfPalette.textMuted),
+          ),
+        ],
+      ),
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Formatação
   // ---------------------------------------------------------------------------
@@ -590,13 +731,6 @@ class ReportPdfBuilder {
     if (lower == 'ana') return 'Aª';
     return w;
   }
-
-  static String _levelLabel(RehearsalLevel l) => switch (l) {
-    RehearsalLevel.polo => 'Polo',
-    RehearsalLevel.area => 'Área',
-    RehearsalLevel.region => 'Região',
-    RehearsalLevel.maanaim => 'Maanaim',
-  };
 
   static String _roleLabel(UserRole r) => switch (r) {
     UserRole.admin => 'Administrador',

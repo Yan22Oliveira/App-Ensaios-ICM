@@ -21,7 +21,7 @@ class ReportsView extends StatefulWidget {
 
 class _ReportsViewState extends State<ReportsView> {
   DateTimeRange? _range;
-  RehearsalLevel? _level;
+  EventType? _eventType;
   String? _regionId;
   String? _areaId;
   String? _poloId;
@@ -143,7 +143,7 @@ class _ReportsViewState extends State<ReportsView> {
     context.read<ReportsController>().setFilters(
       ReportFilters(
         range: _range,
-        level: _level,
+        eventType: _eventType,
         regionId: _regionId,
         areaId: _areaId,
         poloId: _poloId,
@@ -317,10 +317,24 @@ class _ReportsViewState extends State<ReportsView> {
 
   Future<Uint8List> _buildPdfBytes(BuildContext context) async {
     final controller = context.read<ReportsController>();
+    final reportRepo = context.read<IEventReportRepository>();
+    final eventReports = <(Rehearsal, EventReport)>[];
+    final events = controller.state.byRehearsal.map((e) => e.rehearsal).toList();
+    const chunk = 8;
+    for (var i = 0; i < events.length; i += chunk) {
+      final slice = events.sublist(i, i + chunk > events.length ? events.length : i + chunk);
+      final loaded = await Future.wait(slice.map((e) => reportRepo.getByEventId(e.id)));
+      for (var j = 0; j < slice.length; j++) {
+        final report = loaded[j];
+        if (report != null) eventReports.add((slice[j], report));
+      }
+    }
+    eventReports.sort((a, b) => a.$1.dateTime.compareTo(b.$1.dateTime));
     return ReportPdfBuilder(
       state: controller.state,
       geo: context.read<GeoNameResolver>(),
       profile: controller.profile,
+      eventReports: eventReports,
     ).build();
   }
 
@@ -373,15 +387,15 @@ class _ReportsViewState extends State<ReportsView> {
                       ],
                     ),
                     const SizedBox(height: 16),
-                    DropdownButtonFormField<RehearsalLevel?>(
-                      value: _level,
-                      onChanged: (v) { setState(() => _level = v); _apply(); },
+                    DropdownButtonFormField<EventType?>(
+                      value: _eventType,
+                      onChanged: (v) { setState(() => _eventType = v); _apply(); },
                       isExpanded: true,
                       decoration: const InputDecoration(labelText: 'Tipo', border: OutlineInputBorder()),
                       items: [
                         const DropdownMenuItem(value: null, child: Text('Todos')),
-                        ...RehearsalLevel.values.map((e) =>
-                            DropdownMenuItem(value: e, child: Text(e.name))),
+                        ...EventType.values.map((e) =>
+                            DropdownMenuItem(value: e, child: Text(e.label))),
                       ],
                     ),
                     const SizedBox(height: 16),
@@ -488,7 +502,7 @@ class _ReportsViewState extends State<ReportsView> {
                         tabs: [
                           Tab(text: 'Visão geral'),
                           Tab(text: 'Por pessoa'),
-                          Tab(text: 'Por ensaio'),
+                          Tab(text: 'Por evento'),
                         ],
                       ),
                       Expanded(
@@ -536,7 +550,7 @@ class _OverviewTab extends StatelessWidget {
           children: [
             Expanded(
               child: SummaryCard(
-                title: 'Ensaios totais',
+                title: 'Eventos totais',
                 value: '${s.totalRehearsals}',
                 icon: Icons.event_rounded,
                 color: AppTheme.primary,
@@ -627,12 +641,6 @@ class _ByRehearsalTab extends StatelessWidget {
         final it = s.byRehearsal[i];
         final r = it.rehearsal;
         final pct = (it.attendanceRate * 100).toStringAsFixed(0);
-        final place = [
-          r.level.name,
-          geo.regionName(r.regionId) ?? r.regionId,
-          if (r.areaId != null) (geo.areaName(r.areaId!) ?? r.areaId!),
-          if (r.poloId != null) (geo.poloName(r.poloId!) ?? r.poloId!),
-        ].join(' • ');
         final colorBadge = switch (r.level) {
           RehearsalLevel.polo     => AppTheme.primary,
           RehearsalLevel.area     => AppTheme.accentPurple,
@@ -678,7 +686,15 @@ class _ByRehearsalTab extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text( geo.levelName(r), style: const TextStyle(fontWeight: FontWeight.w700)),
+                    Text(
+                      r.eventType.label,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    Text(
+                      geo.levelName(r),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                     Text(
                       '${hhmm(r.dateTime)} • ${r.place ?? ''}',
                       maxLines: 1,

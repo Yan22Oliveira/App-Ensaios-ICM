@@ -46,11 +46,12 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
 
   // Perfil tem escopo válido para o papel?
   bool _hasValidScope(UserProfile me) {
+    if (!me.active) return false;
     switch (me.role) {
       case UserRole.admin:
         return true;
       case UserRole.maanaim:
-        return true; // suas rules limitam por level na leitura
+        return (me.regionId ?? '').isNotEmpty;
       case UserRole.region:
         return (me.regionId ?? '').isNotEmpty;
       case UserRole.area:
@@ -62,13 +63,38 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
     }
   }
 
+  bool _isRecoverableQueryError(FirebaseException e) =>
+      e.code == 'permission-denied' || e.code == 'failed-precondition';
+
+  /// Executa as queries uma a uma. Uma query negada/sem índice não derruba as demais.
+  Future<List<QuerySnapshot<Map<String, dynamic>>>> _getQueries(
+    List<Query<Map<String, dynamic>>> queries,
+  ) async {
+    if (queries.isEmpty) return const [];
+    final snaps = await Future.wait(queries.map((q) async {
+      try {
+        return await q.get();
+      } on FirebaseException catch (e) {
+        if (_isRecoverableQueryError(e)) return null;
+        rethrow;
+      }
+    }));
+    return [
+      for (final s in snaps)
+        if (s != null) s,
+    ];
+  }
+
   // ===== Map =====
   Rehearsal _fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
     final d = doc.data()!;
     final rawRegion = d['regionId'];
     final regionId = (rawRegion is String ? rawRegion.trim() : rawRegion?.toString()) ?? '';
+    final rawTitle = (d['title'] as String?)?.trim();
     return Rehearsal(
       id: doc.id,
+      eventType: eventTypeFromString(d['eventType'] as String?),
+      title: (rawTitle == null || rawTitle.isEmpty) ? null : rawTitle,
       dateTime: tsToDate(d['dateTime'] as Timestamp)!,
       level: levelFromStr((d['level'] as String?) ?? 'polo'),
       regionId: regionId,
@@ -76,30 +102,53 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
       poloId: d['poloId'] as String?,
       place: d['place'] as String?,
       description: d['description'] as String?,
+      participantMode: eventParticipantModeFromString(d['participantMode'] as String?),
+      expectedParticipants: _stringList(d['expectedParticipants']),
+      participantsSnapshot: d.containsKey('participantsSnapshot')
+          ? _stringList(d['participantsSnapshot'])
+          : null,
       closed: (d['closed'] as bool?) ?? false,
       closedAt: (d['closedAt'] as Timestamp?)?.toDate(),
     );
+  }
+
+  List<String> _stringList(dynamic raw) {
+    if (raw is! List) return const [];
+    return raw
+        .map((e) => e?.toString().trim() ?? '')
+        .where((e) => e.isNotEmpty)
+        .toList();
   }
 
   Map<String, dynamic> _toMap({
     required DateTime dateTime,
     required RehearsalLevel level,
     required String regionId,
+    required EventType eventType,
+    String? title,
     String? areaId,
     String? poloId,
     String? place,
     String? description,
+    EventParticipantMode participantMode = EventParticipantMode.all,
+    List<String> expectedParticipants = const [],
     bool closed = false,
     DateTime? closedAt,
   }) =>
       {
         'dateTime': dateToTs(dateTime),
         'level': levelToStr(level),
+        'eventType': eventTypeToString(eventType),
+        'title': title,
         'regionId': regionId,
         'areaId': areaId,
         'poloId': poloId,
         'place': place,
         'description': description,
+        'participantMode': eventParticipantModeToString(participantMode),
+        'expectedParticipants': participantMode == EventParticipantMode.selected
+            ? expectedParticipants
+            : const <String>[],
         'closed': closed,
         if (closedAt != null) 'closedAt': Timestamp.fromDate(closedAt),
       };
@@ -186,7 +235,7 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
         ];
       case UserRole.maanaim:
         final maanaimId = me.regionId ?? '';
-        if (maanaimId.isEmpty) return [base.where('level', isEqualTo: '__none__')];
+        if (maanaimId.isEmpty) return const [];
 
         // Rehearsal nível maanaim: usa regionId como id do maanaim (padrão atual do app).
         final maanaimQuery = base.where('level', isEqualTo: 'maanaim').where('regionId', isEqualTo: maanaimId);
@@ -201,9 +250,8 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
           chunks.add(ids.sublist(i, (i + 10).clamp(0, ids.length)));
         }
 
-        // Rules do maanaim permitem level in ['region','area','polo'] desde que
-        // exista o doc /maanains/{maanaimId}/regions/{regionId}. Como não dá para
-        // fazer 2x whereIn (level e regionId), dividimos por level (3 queries por chunk).
+        // Listagem abaixo: whereIn(regionId) das regiões do maanaim.
+        // A rule de list permite level in [region,area,polo] para maanaim (sem exists()).
         final below = <Query<Map<String, dynamic>>>[];
         for (final c in chunks) {
           below.add(base.where('level', isEqualTo: 'region').where('regionId', whereIn: c));
@@ -222,7 +270,7 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
         if ((me.regionId ?? '').isNotEmpty) {
           return [base.where('level', isEqualTo: 'region').where('regionId', isEqualTo: me.regionId)];
         }
-        return [base.where('level', isEqualTo: '__none__')];
+        return const [];
     }
   }
 
@@ -256,7 +304,7 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
         ];
       case UserRole.maanaim:
         final maanaimId = me.regionId ?? '';
-        if (maanaimId.isEmpty) return [base.where('level', isEqualTo: '__none__')];
+        if (maanaimId.isEmpty) return const [];
 
         final maanaimQuery = base.where('level', isEqualTo: 'maanaim').where('regionId', isEqualTo: maanaimId);
 
@@ -286,7 +334,7 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
         if ((me.regionId ?? '').isNotEmpty) {
           return [base.where('level', isEqualTo: 'region').where('regionId', isEqualTo: me.regionId)];
         }
-        return [base.where('level', isEqualTo: '__none__')];
+        return const [];
     }
   }
 
@@ -337,7 +385,14 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
             latest[i] = snap.docs.map(_fromDoc).toList();
             emitMerged();
           },
-          onError: controller.addError,
+          onError: (Object e, StackTrace st) {
+            if (e is FirebaseException && _isRecoverableQueryError(e)) {
+              latest[i] = const [];
+              emitMerged();
+              return;
+            }
+            controller.addError(e, st);
+          },
         ));
       }
 
@@ -382,7 +437,7 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
         ];
       case UserRole.maanaim:
         final maanaimId = me.regionId ?? '';
-        if (maanaimId.isEmpty) return [base.where('level', isEqualTo: '__none__')];
+        if (maanaimId.isEmpty) return const [];
 
         final maanaimQuery = base.where('level', isEqualTo: 'maanaim').where('regionId', isEqualTo: maanaimId);
 
@@ -413,7 +468,7 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
         if ((me.regionId ?? '').isNotEmpty) {
           return [base.where('level', isEqualTo: 'region').where('regionId', isEqualTo: me.regionId)];
         }
-        return [base.where('level', isEqualTo: '__none__')];
+        return const [];
     }
   }
 
@@ -423,19 +478,27 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
     required DateTime dateTime,
     required RehearsalLevel level,
     required String regionId,
+    required EventType eventType,
+    String? title,
     String? areaId,
     String? poloId,
     String? place,
     String? description,
+    EventParticipantMode participantMode = EventParticipantMode.all,
+    List<String> expectedParticipants = const [],
   }) async {
     final doc = await _col.add(_toMap(
       dateTime: dateTime,
       level: level,
       regionId: regionId,
+      eventType: eventType,
+      title: title,
       areaId: areaId,
       poloId: poloId,
       place: place,
       description: description,
+      participantMode: participantMode,
+      expectedParticipants: expectedParticipants,
       closed: false,
     ));
     final snap = await doc.get();
@@ -454,7 +517,7 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
     );
 
     try {
-      final res = await Future.wait(queries.map((q) => q.get()));
+      final res = await _getQueries(queries);
       final byId = <String, Rehearsal>{};
       for (final snap in res) {
         for (final d in snap.docs) {
@@ -467,20 +530,23 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
       final list = byId.values.toList()..sort((a, b) => a.dateTime.compareTo(b.dateTime));
       return list;
     } on FirebaseException catch (e) {
-      if (e.code != 'failed-precondition') rethrow;
+      if (!_isRecoverableQueryError(e) || me.role != UserRole.admin) return const [];
 
-      // Fallback sem escopo (evita índice composto) + filtro local.
-      final fb = await _col
-          .where('closed', isEqualTo: false)
-          .orderBy('dateTime')
-          .limit(500)
-          .get();
-      final list = fb.docs
-          .map(_fromDoc)
-          .where((r) => !r.closed && _inScopeHierarchy(me, r))
-          .toList()
-        ..sort((a, b) => a.dateTime.compareTo(b.dateTime));
-      return list;
+      // Fallback só para admin (rules permitem listagem sem filtro de escopo).
+      try {
+        final fb = await _col
+            .where('closed', isEqualTo: false)
+            .orderBy('dateTime')
+            .limit(500)
+            .get();
+        return fb.docs
+            .map(_fromDoc)
+            .where((r) => !r.closed && _inScopeHierarchy(me, r))
+            .toList()
+          ..sort((a, b) => a.dateTime.compareTo(b.dateTime));
+      } on FirebaseException {
+        return const [];
+      }
     }
   }
 
@@ -518,7 +584,7 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
         descending: true,
         limit: 500,
       );
-      final res = await Future.wait(queries.map((q) => q.get()));
+      final res = await _getQueries(queries);
       final byId = <String, Rehearsal>{};
       for (final snap in res) {
         for (final d in snap.docs) {
@@ -531,21 +597,23 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
       final list = byId.values.toList()..sort((a, b) => b.dateTime.compareTo(a.dateTime));
       return list;
     } on FirebaseException catch (e) {
-      if (e.code != 'failed-precondition') rethrow;
+      if (!_isRecoverableQueryError(e) || me.role != UserRole.admin) return const [];
 
-      // Fallback sem escopo (evita índice composto). Filtramos localmente.
-      final fb = await _col
-          .where('dateTime', isGreaterThanOrEqualTo: Timestamp.fromDate(limitDate))
-          .orderBy('dateTime', descending: true)
-          .limit(500)
-          .get();
+      try {
+        final fb = await _col
+            .where('dateTime', isGreaterThanOrEqualTo: Timestamp.fromDate(limitDate))
+            .orderBy('dateTime', descending: true)
+            .limit(500)
+            .get();
 
-      final filtered = fb.docs
-          .map(_fromDoc)
-          .where((r) => r.closed && _inScopeHierarchy(me, r))
-          .toList()
-        ..sort((a, b) => b.dateTime.compareTo(a.dateTime));
-      return filtered;
+        return fb.docs
+            .map(_fromDoc)
+            .where((r) => r.closed && _inScopeHierarchy(me, r))
+            .toList()
+          ..sort((a, b) => b.dateTime.compareTo(a.dateTime));
+      } on FirebaseException {
+        return const [];
+      }
     }
   }
 
@@ -587,7 +655,7 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
         descending: false,
         limit: 1000,
       );
-      final res = await Future.wait(queries.map((q) => q.get()));
+      final res = await _getQueries(queries);
 
       final byId = <String, Rehearsal>{};
       for (final snap in res) {
@@ -600,14 +668,19 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
       final list = byId.values.toList()..sort((a, b) => a.dateTime.compareTo(b.dateTime));
       return list;
     } on FirebaseException catch (e) {
-      if (e.code != 'failed-precondition') rethrow;
+      if (!_isRecoverableQueryError(e) || me.role != UserRole.admin) return const [];
 
-      // Fallback sem filtros de escopo (não precisa índice composto).
-      final fb = await _col
-          .where('dateTime', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
-          .where('dateTime', isLessThanOrEqualTo: Timestamp.fromDate(end))
-          .orderBy('dateTime')
-          .get();
+      // Fallback sem filtros de escopo: só admin passa nas rules.
+      late final QuerySnapshot<Map<String, dynamic>> fb;
+      try {
+        fb = await _col
+            .where('dateTime', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+            .where('dateTime', isLessThanOrEqualTo: Timestamp.fromDate(end))
+            .orderBy('dateTime')
+            .get();
+      } on FirebaseException {
+        return const [];
+      }
 
       final all = fb.docs.map(_fromDoc).toList();
 
@@ -682,7 +755,9 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
       if (snap.docs.isEmpty) return null;
       return _fromDoc(snap.docs.first);
     } on FirebaseException catch (e) {
-      if (e.code == 'failed-precondition') {
+      if (!_isRecoverableQueryError(e)) rethrow;
+      if (e.code != 'failed-precondition') return null;
+      try {
         final snap = await _applyScope(
           _col
               .where('dateTime', isGreaterThanOrEqualTo: Timestamp.fromDate(now))
@@ -694,9 +769,10 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
           final r = _fromDoc(d);
           if (!r.closed) return r;
         }
+      } on FirebaseException {
         return null;
       }
-      rethrow;
+      return null;
     }
   }
 
@@ -714,10 +790,14 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
     required DateTime dateTime,
     required RehearsalLevel level,
     required String regionId,
+    required EventType eventType,
+    String? title,
     String? areaId,
     String? poloId,
     String? place,
     String? description,
+    EventParticipantMode participantMode = EventParticipantMode.all,
+    List<String> expectedParticipants = const [],
     bool? closed,
     DateTime? closedAt,
   }) async {
@@ -725,16 +805,25 @@ class FirestoreRehearsalRepository implements IRehearsalRepository {
       dateTime: dateTime,
       level: level,
       regionId: regionId,
+      eventType: eventType,
+      title: title,
       areaId: areaId,
       poloId: poloId,
       place: place,
       description: description,
+      participantMode: participantMode,
+      expectedParticipants: expectedParticipants,
       closed: closed ?? false,
       closedAt: closedAt,
     );
     await _col.doc(id).set(data, SetOptions(merge: true));
     final snap = await _col.doc(id).get();
     return _fromDoc(snap);
+  }
+
+  @override
+  Future<void> setParticipantsSnapshot(String id, List<String> personIds) async {
+    await _col.doc(id).update({'participantsSnapshot': personIds});
   }
 
   @override

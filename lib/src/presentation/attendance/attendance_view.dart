@@ -116,8 +116,9 @@ class _AttendanceViewState extends State<AttendanceView> {
                   final ok = await _confirmFinish(context);
                   if (ok == true) {
                     await c.finalize();
-                    // Se preferir sair da tela ao finalizar, descomente:
-                    // if (mounted) Navigator.pop(context);
+                    if (context.mounted) {
+                      await _showCallFinishedSheet(context, c);
+                    }
                   }
                 },
                 child: const Padding(
@@ -167,13 +168,13 @@ class _AttendanceViewState extends State<AttendanceView> {
                           Icon(Icons.people_outline_rounded, size: 64, color: Colors.black38),
                           SizedBox(height: 16),
                           Text(
-                            'Nenhum participante encontrado para este ensaio.',
+                            'Nenhum participante encontrado para este evento.',
                             textAlign: TextAlign.center,
                             style: TextStyle(fontSize: 16, color: Colors.black54),
                           ),
                           SizedBox(height: 8),
                           Text(
-                            'Verifique se há pessoas cadastradas com o mesmo nível (polo/área/região) e escopo do ensaio.',
+                            'Verifique se há pessoas cadastradas com o mesmo nível (polo/área/região) e escopo do evento.',
                             textAlign: TextAlign.center,
                             style: TextStyle(fontSize: 13, color: Colors.black45),
                           ),
@@ -281,6 +282,60 @@ class _AttendanceViewState extends State<AttendanceView> {
       ),
     );
   }
+
+  Future<void> _showCallFinishedSheet(BuildContext context, AttendanceController c) async {
+    EventReport? report;
+    try {
+      report = await context.read<IEventReportRepository>().getByEventId(widget.rehearsalId);
+    } catch (_) {}
+    if (!context.mounted) return;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Chamada finalizada', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+                const SizedBox(height: 12),
+                Text(
+                  '${c.presentCount} presentes\n${c.unjustifiedCount} faltas\n${c.justifiedCount} justificadas',
+                  style: const TextStyle(height: 1.4),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      openEventReport(context, widget.rehearsalId);
+                    },
+                    child: Text(report == null ? 'Criar relatório do evento' : 'Ver relatório do evento'),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('Concluir'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
 }
 
 class _HeaderBlock extends StatelessWidget {
@@ -335,12 +390,37 @@ class _HeaderBlock extends StatelessWidget {
               const SizedBox(height: 8),
             ],
 
-            Text(locationLabel, style: const TextStyle(fontWeight: FontWeight.bold)),
+            Text(
+              controller.state.rehearsal?.displayTitle ?? locationLabel,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            if (controller.state.rehearsal != null) ...[
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  EventTypeChip(type: controller.state.rehearsal!.eventType),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      locationLabel,
+                      style: const TextStyle(color: Colors.black54),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 6),
             Text(
               [timeLabel, if ((place ?? '').isNotEmpty) place!].join('  •  '),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '${controller.state.participants.length} participantes',
+              style: const TextStyle(fontWeight: FontWeight.w700, color: Colors.black87),
             ),
             const SizedBox(height: 12),
             Row(children: [
@@ -355,7 +435,18 @@ class _HeaderBlock extends StatelessWidget {
                 textColor: Colors.black87,
               ),
             ]),
-            const SizedBox(height: 12),
+            if (controller.unmarkedCount > 0 && !isClosed) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Falta marcar: ${controller.unmarkedCount}',
+                style: const TextStyle(color: Colors.black54, fontSize: 13),
+              ),
+            ],
+            if (controller.state.rehearsal != null) ...[
+              const SizedBox(height: 12),
+              const Divider(height: 1),
+              _EventReportAccessRow(eventId: controller.state.rehearsal!.id),
+            ],
           ],
         ),
       ),
@@ -379,6 +470,78 @@ class _BulkActions extends StatelessWidget {
       ),
       onPressed: isClosed ? null : () => controller.markAll(AttendanceStatus.present),
       child: const Text('Lançar presença para todos'),
+    );
+  }
+}
+
+class _EventReportAccessRow extends StatefulWidget {
+  final String eventId;
+  const _EventReportAccessRow({required this.eventId});
+
+  @override
+  State<_EventReportAccessRow> createState() => _EventReportAccessRowState();
+}
+
+class _EventReportAccessRowState extends State<_EventReportAccessRow> {
+  EventReport? _report;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  Future<void> _reload() async {
+    try {
+      final report = await context.read<IEventReportRepository>().getByEventId(widget.eventId);
+      if (!mounted) return;
+      setState(() {
+        _report = report;
+        _loading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final statusLabel = _loading
+        ? '…'
+        : (_report == null ? 'Não iniciado' : _report!.status.label);
+    final color = _report == null
+        ? Colors.blueGrey
+        : _report!.status == EventReportStatus.finalized
+            ? AppTheme.success
+            : AppTheme.accentOrange;
+
+    return InkWell(
+      onTap: () async {
+        await openEventReport(context, widget.eventId);
+        if (mounted) _reload();
+      },
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.only(top: 12),
+        child: Row(
+          children: [
+            Icon(Icons.description_outlined, color: AppTheme.primary.withValues(alpha: .9)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Relatório do evento', style: TextStyle(fontWeight: FontWeight.w700)),
+                  Text(statusLabel, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right_rounded),
+          ],
+        ),
+      ),
     );
   }
 }

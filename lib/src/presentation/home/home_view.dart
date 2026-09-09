@@ -72,27 +72,31 @@ class _HomeViewState extends State<HomeView> {
         .subtract(const Duration(milliseconds: 1));
 
     // Consultas já respeitam escopo no repositório.
-    final todays = await repo.listBetween(todayStart, todayEnd);
-    final monthly = await repo.listBetween(monthStart, monthEnd);
+    try {
+      final todays = await repo.listBetween(todayStart, todayEnd);
+      final monthly = await repo.listBetween(monthStart, monthEnd);
 
-    // próximos 30 dias para o calendário (inclusive o 30º dia)
-    final horizonStart = todayStart;
-    final horizonEnd = todayStart
-        .add(const Duration(days: 30))
-        .subtract(const Duration(milliseconds: 1));
-    final next30 = await repo.listBetween(horizonStart, horizonEnd);
+      // próximos 30 dias para o calendário (inclusive o 30º dia)
+      final horizonStart = todayStart;
+      final horizonEnd = todayStart
+          .add(const Duration(days: 30))
+          .subtract(const Duration(milliseconds: 1));
+      final next30 = await repo.listBetween(horizonStart, horizonEnd);
 
-    if (!mounted) return;
-    setState(() {
-      _hasToday = todays.any((r) => !r.closed);
-      _todayCount = todays.length;
-      _monthCount = monthly.length;
-      _daysWithRehearsal = next30
-          .map((e) => DateTime(e.dateTime.year, e.dateTime.month, e.dateTime.day))
-          .toSet()
-          .toList()
-        ..sort((a, b) => a.compareTo(b));
-    });
+      if (!mounted) return;
+      setState(() {
+        _hasToday = todays.any((r) => !r.closed);
+        _todayCount = todays.length;
+        _monthCount = monthly.length;
+        _daysWithRehearsal = next30
+            .map((e) => DateTime(e.dateTime.year, e.dateTime.month, e.dateTime.day))
+            .toSet()
+            .toList()
+          ..sort((a, b) => a.compareTo(b));
+      });
+    } catch (e) {
+      debugPrint('[Home] falha ao carregar estatísticas: $e');
+    }
   }
 
   // Helpers de “histórico de export”
@@ -156,7 +160,7 @@ class _HomeViewState extends State<HomeView> {
         appBar: AppBar(
           backgroundColor: AppTheme.primary,
           title: const Text(
-            'Ensaios ICM',
+            'Frequência ICM',
             style: TextStyle(fontWeight: FontWeight.w700),
           ),
           actions: const [_AccountButton()],
@@ -177,8 +181,9 @@ class _HomeViewState extends State<HomeView> {
                 onTapDay: (day) {
                   Navigator.push(context, MaterialPageRoute(builder: (_) {
                     final repo = context.read<IRehearsalRepository>();
+                    final reportRepo = context.read<IEventReportRepository>();
                     return BlocProvider(
-                      create: (_) => RehearsalListController(repo),
+                      create: (_) => RehearsalListController(repo, reportRepo),
                       child: rehe.RehearsalListView(initialDayFilter: day),
                     );
                   }));
@@ -186,14 +191,15 @@ class _HomeViewState extends State<HomeView> {
               ),
               const SizedBox(height: 24),
 
-              const _SectionTitle('Próximos Ensaios'),
+              const _SectionTitle('Próximos Eventos'),
               const SizedBox(height: 12),
               _NextRehearsalCard(
                 onOpenList: () {
                   Navigator.push(context, MaterialPageRoute(builder: (_) {
                     final repo = context.read<IRehearsalRepository>();
+                    final reportRepo = context.read<IEventReportRepository>();
                     return BlocProvider(
-                      create: (_) => RehearsalListController(repo),
+                      create: (_) => RehearsalListController(repo, reportRepo),
                       child: const rehe.RehearsalListView(),
                     );
                   }));
@@ -230,7 +236,7 @@ class _HomeViewState extends State<HomeView> {
                 children: [
                   Expanded(
                     child: _KpiCard(
-                      label: 'Ensaios\n no mês',
+                      label: 'Eventos\n no mês',
                       value: '$_monthCount',
                       icon: Icons.event_rounded,
                       color: AppTheme.primary,
@@ -287,14 +293,15 @@ class _QuickActionsGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     final items = <_QuickActionItem>[
       _QuickActionItem(
-        label: 'Ensaios',
+        label: 'Eventos',
         icon: Icons.event_note_rounded,
         color: AppTheme.accentPurple,
         onTap: () {
           Navigator.push(context, MaterialPageRoute(builder: (_) {
             final repo = context.read<IRehearsalRepository>();
+            final reportRepo = context.read<IEventReportRepository>();
             return BlocProvider(
-              create: (_) => RehearsalListController(repo),
+              create: (_) => RehearsalListController(repo, reportRepo),
               child: const rehe.RehearsalListView(),
             );
           }));
@@ -603,7 +610,7 @@ class _NextRehearsalCard extends StatelessWidget {
         final resolver = context.read<GeoNameResolver>();
         final d = r.dateTime;
         final hour = '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
-        final level = resolver.levelLabel(r.level);
+        final typeLabel = r.eventType.label;
         final location = resolver.locationLabel(r);
 
         return InkWell(
@@ -628,7 +635,7 @@ class _NextRehearsalCard extends StatelessWidget {
               const SizedBox(width: 12),
               Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text('Próximo ensaio • $level', style: const TextStyle(fontWeight: FontWeight.w700)),
+                  Text('Próximo evento • $typeLabel', style: const TextStyle(fontWeight: FontWeight.w700)),
                   const SizedBox(height: 4),
                   Text('${_dateLabel(d)} • $hour', maxLines: 1, overflow: TextOverflow.ellipsis),
                   const SizedBox(height: 2),
@@ -674,9 +681,9 @@ class _EmptyRehearsalCard extends StatelessWidget {
           SizedBox(width: 12),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Nenhum ensaio agendado', style: TextStyle(fontWeight: FontWeight.w700)),
+              Text('Nenhum evento agendado', style: TextStyle(fontWeight: FontWeight.w700)),
               SizedBox(height: 4),
-              Text('Toque para ver/criar ensaios', maxLines: 1, overflow: TextOverflow.ellipsis),
+              Text('Toque para ver/criar eventos', maxLines: 1, overflow: TextOverflow.ellipsis),
             ]),
           ),
           Icon(Icons.chevron_right_rounded),
@@ -709,7 +716,7 @@ class _ErrorRehearsalCard extends StatelessWidget {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('Falha ao carregar', style: TextStyle(fontWeight: FontWeight.w700)),
               SizedBox(height: 4),
-              Text('Toque para abrir a lista de ensaios', maxLines: 1, overflow: TextOverflow.ellipsis),
+              Text('Toque para abrir a lista de eventos', maxLines: 1, overflow: TextOverflow.ellipsis),
             ]),
           ),
           Icon(Icons.chevron_right_rounded),

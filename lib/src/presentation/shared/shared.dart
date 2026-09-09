@@ -1,4 +1,5 @@
 export 'count_chip.dart';
+export 'event_type_chip.dart';
 export 'geo_lookup.dart';
 export 'person_card.dart';
 export 'pill_button.dart';

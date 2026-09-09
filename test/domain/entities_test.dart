@@ -30,14 +30,27 @@ void main() {
       expect(r.isClosed, true);
     });
 
-    test('isClosed retorna false quando dateTime está no futuro', () {
+    test('displayTitle usa o tipo quando não há título', () {
       final r = Rehearsal(
         id: 'r1',
-        dateTime: DateTime.now().add(const Duration(days: 1)),
+        dateTime: DateTime.now(),
         level: RehearsalLevel.polo,
         regionId: 'r1',
+        eventType: EventType.vigil,
       );
-      expect(r.isClosed, false);
+      expect(r.displayTitle, 'Vigília');
+    });
+
+    test('displayTitle prefere o título informado', () {
+      final r = Rehearsal(
+        id: 'r1',
+        dateTime: DateTime.now(),
+        level: RehearsalLevel.polo,
+        regionId: 'r1',
+        eventType: EventType.vigil,
+        title: 'Vigília de Jovens',
+      );
+      expect(r.displayTitle, 'Vigília de Jovens');
     });
   });
 

@@ -12,6 +12,7 @@ enum ReportsTab { overview, byPerson, byRehearsal, raw }
 class ReportFilters extends Equatable {
   final DateTimeRange? range;
   final RehearsalLevel? level;
+  final EventType? eventType;
   final String? regionId;
   final String? areaId;
   final String? poloId;
@@ -20,6 +21,7 @@ class ReportFilters extends Equatable {
   const ReportFilters({
     required this.range,
     this.level,
+    this.eventType,
     this.regionId,
     this.areaId,
     this.poloId,
@@ -29,6 +31,7 @@ class ReportFilters extends Equatable {
   ReportFilters copyWith({
     DateTimeRange? range,
     RehearsalLevel? level,
+    EventType? eventType,
     String? regionId,
     String? areaId,
     String? poloId,
@@ -37,6 +40,7 @@ class ReportFilters extends Equatable {
     return ReportFilters(
       range: range ?? this.range,
       level: level ?? this.level,
+      eventType: eventType ?? this.eventType,
       regionId: regionId ?? this.regionId,
       areaId: areaId ?? this.areaId,
       poloId: poloId ?? this.poloId,
@@ -45,7 +49,7 @@ class ReportFilters extends Equatable {
   }
 
   @override
-  List<Object?> get props => [range, level, regionId, areaId, poloId, onlyWithRecords];
+  List<Object?> get props => [range, level, eventType, regionId, areaId, poloId, onlyWithRecords];
 }
 
 class PersonSummary extends Equatable {
@@ -229,6 +233,7 @@ class ReportsController extends Cubit<ReportsState> {
     final inRange = allRehearsals.where((r) {
       return !r.dateTime.isBefore(effectiveRange.start) && !r.dateTime.isAfter(effectiveRange.end);
     }).where((r) {
+      if (newFilters.eventType != null && r.eventType != newFilters.eventType) return false;
       if (newFilters.level != null && r.level != newFilters.level) return false;
       if (newFilters.regionId != null && r.regionId != newFilters.regionId) return false;
       if (newFilters.areaId != null && r.areaId != newFilters.areaId) return false;
@@ -307,10 +312,11 @@ class ReportsController extends Cubit<ReportsState> {
 
   /// CSV simples para qualquer aba — retorna string pronta para gravar em arquivo.
   String buildCsvRaw() {
-    final buffer = StringBuffer('date;time;level;region;area;polo;rehearsalId;personId;personName;status;justification\n');
+    final buffer = StringBuffer('date;time;eventType;level;region;area;polo;rehearsalId;personId;personName;status;justification\n');
     for (final s in state.byRehearsal) {
       // No MVP exportamos agregados como linhas sintéticas (poderia buscar raw record por record também)
       buffer.writeln('${_d(s.rehearsal.dateTime)};${_t(s.rehearsal.dateTime)};'
+          '${s.rehearsal.eventType.label};'
           '${s.rehearsal.level.name};'
           '${geo.regionName(s.rehearsal.regionId) ?? s.rehearsal.regionId};'
           '${s.rehearsal.areaId != null ? (geo.areaName(s.rehearsal.areaId!) ?? s.rehearsal.areaId!) : ''};'

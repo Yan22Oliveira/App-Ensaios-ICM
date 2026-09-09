@@ -15,6 +15,9 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
   final _form = GlobalKey<FormState>();
   final _placeCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
+  final _titleCtrl = TextEditingController();
+
+  EventType _eventType = EventType.rehearsal;
 
   /// Perfil do usuário: define escopo (secretário de maanaim/região/área/polo).
   UserProfile? _profile;
@@ -55,26 +58,50 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
 
   bool _saving = false;
 
+  EventParticipantMode _participantMode = EventParticipantMode.all;
+  final Set<String> _selectedMemberIds = {};
+  int _structureMemberCount = 0;
+  bool _countLoading = false;
+  bool _callStarted = false;
+  Map<String, AttendanceRecord> _existingRecords = const {};
+
   @override
   void initState() {
     super.initState();
     _profile = context.read<AuthController>().state.profile;
     _placeCtrl.addListener(_onHeaderChanged);
     _descCtrl.addListener(_onHeaderChanged);
-    _bootstrap().then((_) {
+    _titleCtrl.addListener(_onHeaderChanged);
+    _bootstrap().then((_) async {
       final r = widget.existing;
       if (r != null) {
         setState(() {
           _date = DateTime(r.dateTime.year, r.dateTime.month, r.dateTime.day);
           _time = TimeOfDay(hour: r.dateTime.hour, minute: r.dateTime.minute);
           _level = r.level;
+          _eventType = r.eventType;
           _regionId = r.regionId;
           _areaId = r.areaId;
           _poloId = r.poloId;
           _placeCtrl.text = r.place ?? '';
           _descCtrl.text = r.description ?? '';
+          _titleCtrl.text = r.title ?? '';
+          _participantMode = r.participantMode;
+          _selectedMemberIds
+            ..clear()
+            ..addAll(r.expectedParticipants);
         });
+        try {
+          final recs = await context.read<IAttendanceRepository>().listByRehearsal(r.id);
+          if (mounted) {
+            setState(() {
+              _callStarted = recs.isNotEmpty || r.participantsSnapshot != null;
+              _existingRecords = {for (final rec in recs) rec.personId: rec};
+            });
+          }
+        } catch (_) {}
       }
+      await _refreshStructureMembers();
     });
   }
 
@@ -241,7 +268,13 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
     return t;
   }
 
-  String _headerTitle(GeoNameResolver geo) {
+  String _headerTitle() {
+    final custom = _titleCtrl.text.trim();
+    if (custom.isNotEmpty) return custom;
+    return _eventType.label;
+  }
+
+  String _scopeTitle(GeoNameResolver geo) {
     final levelLabel = switch (_level) {
       RehearsalLevel.polo => 'Polo',
       RehearsalLevel.area => 'Área',
@@ -262,12 +295,111 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
   static String _fmtTime(TimeOfDay? t) =>
       t == null ? '—:—' : '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
+  bool get _participantsLocked => widget.existing?.closed == true;
+
+  EventParticipantsResolver get _participantsResolver =>
+      EventParticipantsResolver(context.read<IPersonRepository>());
+
+  Future<void> _refreshStructureMembers() async {
+    if (!mounted) return;
+    setState(() => _countLoading = true);
+    try {
+      final list = await _participantsResolver.availableInStructure(
+        level: _level,
+        regionId: _regionId ?? '',
+        areaId: _needArea ? _areaId : null,
+        poloId: _needPolo ? _poloId : null,
+      );
+      if (!mounted) return;
+      setState(() {
+        _structureMemberCount = list.length;
+        _countLoading = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _countLoading = false);
+    }
+  }
+
+  Future<bool> _confirmStructureChange() async {
+    if (_participantsLocked) return true;
+    if (_participantMode != EventParticipantMode.selected || _selectedMemberIds.isEmpty) {
+      return true;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Alterar a estrutura do evento?'),
+        content: const Text(
+          'A alteração da estrutura pode remover participantes que não pertencem ao novo escopo.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
+          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Continuar')),
+        ],
+      ),
+    );
+    return ok == true;
+  }
+
+  Future<void> _tryChangeStructure(Future<void> Function() apply) async {
+    if (!await _confirmStructureChange()) return;
+    await apply();
+    await _afterStructureChanged();
+  }
+
+  Future<void> _afterStructureChanged() async {
+    await _refreshStructureMembers();
+    if (_participantsLocked) return;
+    if (_participantMode != EventParticipantMode.selected || _selectedMemberIds.isEmpty) return;
+    try {
+      final list = await _participantsResolver.availableInStructure(
+        level: _level,
+        regionId: _regionId ?? '',
+        areaId: _needArea ? _areaId : null,
+        poloId: _needPolo ? _poloId : null,
+      );
+      final valid = list.map((p) => p.id).toSet();
+      final removed = _selectedMemberIds.difference(valid);
+      if (removed.isEmpty || !mounted) return;
+      setState(() => _selectedMemberIds.removeAll(removed));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${removed.length} participante${removed.length == 1 ? '' : 's'} '
+            '${removed.length == 1 ? 'foi removido' : 'foram removidos'} por não pertencerem à nova estrutura.',
+          ),
+        ),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _openParticipantsPicker() async {
+    final ids = await openEventParticipantsPicker(
+      context,
+      EventParticipantsPickerArgs(
+        level: _level,
+        regionId: _regionId ?? '',
+        areaId: _needArea ? _areaId : null,
+        poloId: _needPolo ? _poloId : null,
+        selectedIds: Set<String>.from(_selectedMemberIds),
+      ),
+    );
+    if (ids == null || !mounted) return;
+    setState(() {
+      _selectedMemberIds
+        ..clear()
+        ..addAll(ids);
+    });
+  }
+
   @override
   void dispose() {
     _placeCtrl.removeListener(_onHeaderChanged);
     _descCtrl.removeListener(_onHeaderChanged);
+    _titleCtrl.removeListener(_onHeaderChanged);
     _placeCtrl.dispose();
     _descCtrl.dispose();
+    _titleCtrl.dispose();
     super.dispose();
   }
 
@@ -282,7 +414,7 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          widget.existing == null ? 'Criar Ensaio' : 'Editar Ensaio',
+          widget.existing == null ? 'Criar Evento' : 'Editar Evento',
           style: TextStyle(
             fontWeight: FontWeight.w700,
           ),
@@ -355,13 +487,28 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Row(
+                          children: [
+                            EventTypeChip(type: _eventType),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                _headerTitle(),
+                                style: const TextStyle(fontWeight: FontWeight.w800),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
                         Text(
-                          _headerTitle(geo),
-                          style: const TextStyle(fontWeight: FontWeight.w800),
+                          _scopeTitle(geo),
+                          style: const TextStyle(color: Colors.black87),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-                        const SizedBox(height: 4),
+                        const SizedBox(height: 2),
                         Text(
                           '${_fmtTime(_time)} • ${_placeCtrl.text.trim().isEmpty ? '—' : _placeCtrl.text.trim()}',
                           style: const TextStyle(color: Colors.black54),
@@ -383,6 +530,36 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
                 ),
               ),
               const SizedBox(height: 14),
+
+              _SectionCard(
+                title: 'Tipo do evento',
+                child: _SelectField<EventType>(
+                  label: 'Tipo',
+                  value: _eventType,
+                  icon: Icons.category_rounded,
+                  color: AppTheme.primary,
+                  items: EventType.values
+                      .map((t) => DropdownMenuItem(value: t, child: Text(t.label)))
+                      .toList(),
+                  onChanged: (v) {
+                    if (v != null) setState(() => _eventType = v);
+                  },
+                ),
+              ),
+
+              const SizedBox(height: 12),
+              _SectionCard(
+                title: 'Título',
+                child: TextFormField(
+                  controller: _titleCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Nome do evento',
+                    hintText: 'Ex.: Vigília de Jovens',
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 12),
 
               _SectionCard(
                 title: 'Quando',
@@ -424,10 +601,10 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
               if (!_isSecretaryMaanaim && !_isSecretaryPolo) ...[
                 const SizedBox(height: 12),
                 _SectionCard(
-                  title: 'Tipo de ensaio',
+                  title: 'Nível',
                   child: _LevelField(
                     value: _level,
-                    onChanged: _onLevelChanged,
+                    onChanged: (v) => _tryChangeStructure(() => _onLevelChanged(v)),
                     allowedLevels: _isSecretaryArea
                         ? [RehearsalLevel.polo, RehearsalLevel.area]
                         : _isSecretaryRegion
@@ -439,14 +616,14 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
 
               const SizedBox(height: 12),
               _SectionCard(
-                title: 'Localização',
+                title: 'Estrutura',
                 child: Column(
                   children: [
                     if (_isSecretaryMaanaim) ...[
                       _ReadOnlyGeoField(
                         label: 'Maanaim',
                         value: _regionId != null ? (geo.regionName(_regionId!) ?? _regionId!) : '—',
-                        icon: Icons.church_rounded,
+                        icon: Icons.home_work_rounded,
                         color: AppTheme.accentOrange,
                       ),
                     ] else if (_isSecretaryPolo) ...[
@@ -465,16 +642,18 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
                       ),
                       const SizedBox(height: 12),
                       _SelectField<String>(
-                        label: _level == RehearsalLevel.polo ? 'Polo do ensaio' : 'Polo (opcional — ensaio de Área)',
+                        label: _level == RehearsalLevel.polo ? 'Polo do evento' : 'Polo (opcional — evento de Área)',
                         value: _poloId,
                         icon: Icons.location_on_rounded,
                         color: AppTheme.success,
                         items: [
-                          const DropdownMenuItem(value: null, child: Text('— Ensaio de Área —')),
+                          const DropdownMenuItem(value: null, child: Text('— Evento de Área —')),
                           ..._polos.map((p) => DropdownMenuItem(value: p.id, child: Text(p.name))),
                         ],
-                        onChanged: (v) => setState(() => _poloId = v),
-                        validator: _needPolo ? (v) => (v == null || v.isEmpty) ? 'Obrigatório para ensaio de Polo' : null : null,
+                        onChanged: (v) => _tryChangeStructure(() async {
+                          setState(() => _poloId = v);
+                        }),
+                        validator: _needPolo ? (v) => (v == null || v.isEmpty) ? 'Obrigatório para evento de Polo' : null : null,
                       ),
                     ] else if (_isSecretaryRegion) ...[
                       _ReadOnlyGeoField(
@@ -491,7 +670,7 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
                           icon: Icons.map_rounded,
                           color: AppTheme.accentPurple,
                           items: _areas.map((a) => DropdownMenuItem(value: a.id, child: Text(a.name))).toList(),
-                          onChanged: _onAreaChanged,
+                          onChanged: (v) => _tryChangeStructure(() => _onAreaChanged(v)),
                           validator: !_needArea ? null : (v) => (v == null || v.isEmpty) ? 'Obrigatório' : null,
                         ),
                       ],
@@ -503,7 +682,9 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
                           icon: Icons.location_on_rounded,
                           color: AppTheme.success,
                           items: _polos.map((p) => DropdownMenuItem(value: p.id, child: Text(p.name))).toList(),
-                          onChanged: (v) => setState(() => _poloId = v),
+                          onChanged: (v) => _tryChangeStructure(() async {
+                            setState(() => _poloId = v);
+                          }),
                           validator: !_needPolo ? null : (v) => (v == null || v.isEmpty) ? 'Obrigatório' : null,
                         ),
                       ],
@@ -513,15 +694,17 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
                         _SelectField<String>(
                           label: 'Maanaim',
                           value: _regionId,
-                          icon: Icons.music_note_rounded,
+                          icon: Icons.home_work_rounded,
                           color: AppTheme.accentOrange,
                           items: _maanaims.map((m) => DropdownMenuItem(value: m.id, child: Text(m.name))).toList(),
-                          onChanged: (v) => setState(() {
-                            _regionId = v;
-                            _areas = const [];
-                            _areaId = null;
-                            _polos = const [];
-                            _poloId = null;
+                          onChanged: (v) => _tryChangeStructure(() async {
+                            setState(() {
+                              _regionId = v;
+                              _areas = const [];
+                              _areaId = null;
+                              _polos = const [];
+                              _poloId = null;
+                            });
                           }),
                           validator: (v) => (v == null || v.toString().trim().isEmpty) ? 'Selecione o Maanaim' : null,
                         )
@@ -532,7 +715,7 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
                           icon: Icons.public_rounded,
                           color: AppTheme.primary,
                           items: _regions.map((r) => DropdownMenuItem(value: r.id, child: Text(r.name))).toList(),
-                          onChanged: _onRegionChanged,
+                          onChanged: (v) => _tryChangeStructure(() => _onRegionChanged(v)),
                           validator: (v) => (v == null || v.toString().trim().isEmpty) ? 'Obrigatório' : null,
                         ),
                       if (_needArea) ...[
@@ -543,7 +726,9 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
                           icon: Icons.map_rounded,
                           color: AppTheme.accentPurple,
                           items: _areas.map((a) => DropdownMenuItem(value: a.id, child: Text(a.name))).toList(),
-                          onChanged: _showAreaSelect ? _onAreaChanged : null,
+                          onChanged: _showAreaSelect
+                              ? (v) => _tryChangeStructure(() => _onAreaChanged(v))
+                              : null,
                           validator: (v) => (v == null || v.isEmpty) ? 'Obrigatório' : null,
                         ),
                       ],
@@ -555,7 +740,11 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
                           icon: Icons.location_on_rounded,
                           color: AppTheme.success,
                           items: _polos.map((p) => DropdownMenuItem(value: p.id, child: Text(p.name))).toList(),
-                          onChanged: _showPoloSelect ? (v) => setState(() => _poloId = v) : null,
+                          onChanged: _showPoloSelect
+                              ? (v) => _tryChangeStructure(() async {
+                                    setState(() => _poloId = v);
+                                  })
+                              : null,
                           validator: (v) => (v == null || v.isEmpty) ? 'Obrigatório' : null,
                         ),
                       ],
@@ -572,11 +761,11 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
                     TextFormField(
                       controller: _placeCtrl,
                       decoration: const InputDecoration(
-                        labelText: 'Local do ensaio*',
+                        labelText: 'Local do evento*',
                         prefixIcon: Icon(Icons.place_rounded, color: Colors.redAccent, size: 20),
                       ),
                       validator: (v) {
-                        if (v == null || v.trim().isEmpty) return 'Informe o local do ensaio';
+                        if (v == null || v.trim().isEmpty) return 'Informe o local do evento';
                         return null;
                       },
                     ),
@@ -591,6 +780,63 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
                     ),
                   ],
                 ),
+              ),
+
+              const SizedBox(height: 12),
+              _SectionCard(
+                title: 'Participantes',
+                child: _participantsLocked
+                    ? const Text(
+                        'A chamada deste evento já foi finalizada. Para alterar participantes, seria necessário reabrir a chamada.',
+                        style: TextStyle(color: Colors.black54),
+                      )
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Quem deve aparecer na chamada?',
+                            style: TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 8),
+                          RadioListTile<EventParticipantMode>(
+                            contentPadding: EdgeInsets.zero,
+                            value: EventParticipantMode.all,
+                            groupValue: _participantMode,
+                            onChanged: (v) {
+                              if (v == null) return;
+                              setState(() => _participantMode = v);
+                            },
+                            title: const Text('Todos os membros', style: TextStyle(fontWeight: FontWeight.w700)),
+                          ),
+                          RadioListTile<EventParticipantMode>(
+                            contentPadding: EdgeInsets.zero,
+                            value: EventParticipantMode.selected,
+                            groupValue: _participantMode,
+                            onChanged: (v) {
+                              if (v == null) return;
+                              setState(() => _participantMode = v);
+                            },
+                            title: const Text('Selecionar participantes', style: TextStyle(fontWeight: FontWeight.w700)),
+                          ),
+                          if (_participantMode == EventParticipantMode.selected) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              '${_selectedMemberIds.length} participantes selecionados'
+                              '${_structureMemberCount > 0 ? ' de $_structureMemberCount membros disponíveis' : ''}',
+                              style: const TextStyle(fontWeight: FontWeight.w700),
+                            ),
+                            const SizedBox(height: 8),
+                            SizedBox(
+                              width: double.infinity,
+                              child: OutlinedButton.icon(
+                                onPressed: _openParticipantsPicker,
+                                icon: const Icon(Icons.group_add_outlined),
+                                label: const Text('Gerenciar participantes'),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
               ),
 
               const SizedBox(height: 96),
@@ -631,6 +877,71 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
       return;
     }
 
+    final lockedMode = _participantsLocked
+        ? widget.existing!.participantMode
+        : _participantMode;
+    final lockedIds = _participantsLocked
+        ? widget.existing!.expectedParticipants
+        : _selectedMemberIds.toList();
+
+    if (!_participantsLocked &&
+        lockedMode == EventParticipantMode.selected &&
+        lockedIds.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Selecione pelo menos um participante.')),
+      );
+      return;
+    }
+
+    final originalMode = widget.existing?.participantMode ?? EventParticipantMode.all;
+    final originalIds = {...?widget.existing?.expectedParticipants};
+    final nextIds = lockedMode == EventParticipantMode.selected ? lockedIds.toSet() : <String>{};
+    final participantsChanged =
+        widget.existing != null &&
+        (lockedMode != originalMode ||
+            nextIds.length != originalIds.length ||
+            !nextIds.containsAll(originalIds));
+
+    if (!_participantsLocked && _callStarted && participantsChanged) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Alterar participantes da chamada?'),
+          content: const Text(
+            'Adicionar ou remover participantes pode alterar os registros atuais de frequência.',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
+            ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Continuar')),
+          ],
+        ),
+      );
+      if (ok != true) return;
+
+      final removedWithStatus = originalIds.difference(nextIds).where((id) {
+        final st = _existingRecords[id]?.status;
+        return st != null && st != AttendanceStatus.unmarked;
+      }).length;
+      if (removedWithStatus > 0) {
+        final ok2 = await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('Remover quem já tem frequência?'),
+            content: Text(
+              '$removedWithStatus participante${removedWithStatus == 1 ? '' : 's'} já '
+              '${removedWithStatus == 1 ? 'possui' : 'possuem'} registro de presença (P/F/J). '
+              'O histórico não será apagado, mas ${removedWithStatus == 1 ? 'essa pessoa sairá' : 'essas pessoas sairão'} da chamada.',
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
+              ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Remover')),
+            ],
+          ),
+        );
+        if (ok2 != true) return;
+      }
+    }
+
     // Limpa o que NÃO se aplica antes de salvar
     final regionId = _needRegion ? _regionId : null;
     final areaId   = _needArea   ? _areaId   : null;
@@ -643,15 +954,21 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
     setState(() => _saving = true);
     try {
       final repo = context.read<IRehearsalRepository>();
+      final modeToSave = lockedMode;
+      final idsToSave = modeToSave == EventParticipantMode.selected ? lockedIds : const <String>[];
       if (widget.existing == null) {
         final created = await repo.create(
           dateTime: dateTime,
           level: _level,
           regionId: regionId ?? '',
+          eventType: _eventType,
+          title: _titleCtrl.text.trim().isEmpty ? null : _titleCtrl.text.trim(),
           areaId: areaId,
           poloId: poloId,
           place: _placeCtrl.text.trim().isEmpty ? null : _placeCtrl.text.trim(),
           description: _descCtrl.text.trim().isEmpty ? null : _descCtrl.text.trim(),
+          participantMode: modeToSave,
+          expectedParticipants: idsToSave,
         );
         if (!mounted) return;
         Navigator.pop(context, created);
@@ -661,13 +978,30 @@ class _RehearsalCreateViewState extends State<RehearsalCreateView> {
           dateTime: dateTime,
           level: _level,
           regionId: regionId ?? '',
+          eventType: _eventType,
+          title: _titleCtrl.text.trim().isEmpty ? null : _titleCtrl.text.trim(),
           areaId: areaId,
           poloId: poloId,
           place: _placeCtrl.text.trim().isEmpty ? null : _placeCtrl.text.trim(),
           description: _descCtrl.text.trim().isEmpty ? null : _descCtrl.text.trim(),
+          participantMode: modeToSave,
+          expectedParticipants: idsToSave,
           closed: widget.existing!.closed,
           closedAt: widget.existing!.closedAt,
         );
+        if (_callStarted && !_participantsLocked) {
+          final snapIds = modeToSave == EventParticipantMode.selected
+              ? idsToSave
+              : (await _participantsResolver.availableInStructure(
+                    level: _level,
+                    regionId: regionId ?? '',
+                    areaId: areaId,
+                    poloId: poloId,
+                  ))
+                  .map((p) => p.id)
+                  .toList();
+          await repo.setParticipantsSnapshot(updated.id, snapIds);
+        }
         if (!mounted) return;
         Navigator.pop(context, updated);
       }

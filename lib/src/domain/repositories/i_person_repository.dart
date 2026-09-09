@@ -21,5 +21,7 @@ abstract class IPersonRepository {
     List<String>? roles,
   });
   Future<Person?> getById(String id);
+  /// Inclui inativos — usado no snapshot histórico da chamada.
+  Future<List<Person>> listByIds(List<String> ids);
   Future<List<Person>> bulkCreate(List<Person> people);
 }

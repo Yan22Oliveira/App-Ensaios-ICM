@@ -13,6 +13,7 @@ class AttendanceController extends Cubit<AttendanceState> {
   final String currentUserId;
 
   final _uuid = const Uuid();
+  late final EventParticipantsResolver _participantsResolver;
 
   AttendanceController({
     required this.rehearsalRepo,
@@ -20,7 +21,9 @@ class AttendanceController extends Cubit<AttendanceState> {
     required this.attendanceRepo,
     required this.rehearsalId,
     required this.currentUserId,
-  }) : super(AttendanceState.initial());
+  }) : super(AttendanceState.initial()) {
+    _participantsResolver = EventParticipantsResolver(personRepo);
+  }
 
   /// Carrega o ensaio, lista de pessoas (filtrada por nível) e registros existentes
   Future<void> load() async {
@@ -29,84 +32,11 @@ class AttendanceController extends Cubit<AttendanceState> {
     try {
       final rehearsal = await rehearsalRepo.getById(rehearsalId);
 
-      debugPrint('[Chamada] Ensaio carregado: id=${rehearsal.id} level=${rehearsal.level.name} regionId=${rehearsal.regionId} areaId=${rehearsal.areaId} poloId=${rehearsal.poloId}');
+      debugPrint('[Chamada] Ensaio carregado: id=${rehearsal.id} level=${rehearsal.level.name} regionId=${rehearsal.regionId} areaId=${rehearsal.areaId} poloId=${rehearsal.poloId} mode=${rehearsal.participantMode.name}');
 
-      // 1) primeiro limitamos por escopo geográfico via Firestore
-      List<Person> scoped;
-      switch (rehearsal.level) {
-        case RehearsalLevel.maanaim: {
-          final regionId = rehearsal.regionId.trim().isEmpty ? null : rehearsal.regionId;
-          // Se o ensaio não tem região definida (regionId vazio no Firestore), busca todas as pessoas maanaim.
-          if (regionId == null) {
-            debugPrint('[Chamada] Maanaim com regionId vazio no ensaio: buscando todas as pessoas worshipLevel=maanaim (sem filtro de região).');
-          }
-          scoped = await personRepo.list(
-            regionId: regionId,
-            worshipLevel: RehearsalLevel.maanaim,
-          );
-          debugPrint('[Chamada] Maanaim: personRepo.list(regionId=$regionId, worshipLevel=maanaim) retornou ${scoped.length} pessoa(s)');
-          break;
-        }
-        case RehearsalLevel.region:
-          scoped = await personRepo.list(regionId: rehearsal.regionId);
-          break;
-        case RehearsalLevel.area:
-          scoped = await personRepo.list(
-            regionId: rehearsal.regionId,
-            areaId: rehearsal.areaId,
-          );
-          break;
-        case RehearsalLevel.polo:
-          scoped = await personRepo.list(
-            regionId: rehearsal.regionId,
-            areaId: rehearsal.areaId,
-            poloId: rehearsal.poloId,
-          );
-          break;
-      }
+      final persons = await _participantsResolver.resolve(rehearsal);
 
-      // 2) Regras de pertencimento: Maanaim só maanaim da região; Região = região ou maanaim; Área = área/região/maanaim; Polo = todos do polo.
-      bool include(Person p) {
-        switch (rehearsal.level) {
-          case RehearsalLevel.maanaim: {
-            // Se o ensaio não tem região, inclui todas as pessoas maanaim já trazidas pelo repo.
-            final rehearsalRegion = rehearsal.regionId.trim();
-            final ok = p.worshipLevel == RehearsalLevel.maanaim &&
-                (rehearsalRegion.isEmpty || p.regionId == rehearsal.regionId);
-            if (kDebugMode) {
-              debugPrint('[Chamada] include(maanaim): "${p.fullName}" | worshipLevel=${p.worshipLevel.name} regionId="${p.regionId}" (ensaio regionId="${rehearsal.regionId}") => $ok');
-            }
-            return ok;
-          }
-
-          case RehearsalLevel.region:
-          // Region/ Maanaim da MESMA região
-            return (p.regionId == rehearsal.regionId) &&
-                (p.worshipLevel == RehearsalLevel.region ||
-                    p.worshipLevel == RehearsalLevel.maanaim);
-
-          case RehearsalLevel.area:
-          // Area/Region/Maanaim da MESMA área
-            return (p.areaId != null &&
-                p.areaId == rehearsal.areaId) &&
-                (p.worshipLevel == RehearsalLevel.area ||
-                    p.worshipLevel == RehearsalLevel.region ||
-                    p.worshipLevel == RehearsalLevel.maanaim);
-
-          case RehearsalLevel.polo:
-          // Qualquer nível (inclui superiores) do MESMO polo
-            return (p.poloId != null &&
-                p.poloId == rehearsal.poloId) &&
-                (p.worshipLevel == RehearsalLevel.polo ||
-                    p.worshipLevel == RehearsalLevel.area ||
-                    p.worshipLevel == RehearsalLevel.region ||
-                    p.worshipLevel == RehearsalLevel.maanaim);
-        }
-      }
-
-      final persons = scoped.where(include).toList()..sort((a,b)=>a.fullName.compareTo(b.fullName));
-
-      debugPrint('[Chamada] Após filtro include(): ${persons.length} participante(s) na lista final. Nível do ensaio: ${rehearsal.level.name}');
+      debugPrint('[Chamada] Participantes resolvidos: ${persons.length}. snapshot=${rehearsal.participantsSnapshot != null} mode=${rehearsal.participantMode.name}');
 
     // Registros existentes
       final list = await attendanceRepo.listByRehearsal(rehearsalId);
@@ -129,6 +59,7 @@ class AttendanceController extends Cubit<AttendanceState> {
 
   Future<void> finalize() async {
     if (state.rehearsal == null || state.isClosed) return;
+    await _ensureSnapshot();
     await rehearsalRepo.close(state.rehearsal!.id);
     await load(); // recarrega para refletir closed=true
   }
@@ -160,6 +91,11 @@ class AttendanceController extends Cubit<AttendanceState> {
   int get justifiedCount =>
       state.records.values.where((r) => r.status == AttendanceStatus.justifiedAbsence).length;
 
+  int get unmarkedCount => state.participants.where((p) {
+        final status = state.records[p.id]?.status ?? AttendanceStatus.unmarked;
+        return status == AttendanceStatus.unmarked;
+      }).length;
+
   // ======== Ações de marcação ========
 
   Future<void> setStatus(
@@ -182,6 +118,7 @@ class AttendanceController extends Cubit<AttendanceState> {
 
   /// Marca todos os participantes **visíveis** (após busca/filtro local)
   Future<void> markAll(AttendanceStatus status) async {
+    await _ensureSnapshot();
     final now = DateTime.now();
     final toUpdate = <AttendanceRecord>[];
     final nextMap = Map<String, AttendanceRecord>.from(state.records);
@@ -237,6 +174,7 @@ class AttendanceController extends Cubit<AttendanceState> {
       AttendanceStatus status, {
         String? justification,
       }) async {
+    await _ensureSnapshot();
     final existing = state.records[person.id];
     final record = AttendanceRecord(
       id: existing?.id ?? _uuid.v4(),
@@ -255,5 +193,13 @@ class AttendanceController extends Cubit<AttendanceState> {
     final list = await attendanceRepo.listByRehearsal(rehearsalId);
     final map = { for (final r in list) r.personId : r };
     emit(state.copyWith(records: map));
+  }
+
+  Future<void> _ensureSnapshot() async {
+    final rehearsal = state.rehearsal;
+    if (rehearsal == null || rehearsal.participantsSnapshot != null) return;
+    final ids = state.participants.map((p) => p.id).toList();
+    await rehearsalRepo.setParticipantsSnapshot(rehearsal.id, ids);
+    emit(state.copyWith(rehearsal: rehearsal.copyWith(participantsSnapshot: ids)));
   }
 }

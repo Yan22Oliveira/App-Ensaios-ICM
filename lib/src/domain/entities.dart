@@ -1,5 +1,11 @@
-/// Níveis de ensaio e de pertencimento da pessoa (worshipLevel).
+import 'models/event_participant_mode.dart';
+import 'models/event_type.dart';
+export 'models/event_participant_mode.dart';
+export 'models/event_type.dart';
+
+/// Escopo geográfico/organizacional do evento e nível de participação da pessoa (worshipLevel).
 /// Hierarquia: Maanaim > Região > Área > Polo.
+/// Não confundir com [EventType] (ensaio, culto, vigília, etc.).
 /// Ver [business_rules.md] para regras de pertencimento (quem tem região/área/polo obrigatório).
 enum RehearsalLevel { polo, area, region, maanaim }
 enum AttendanceStatus { unmarked, present, justifiedAbsence, unjustifiedAbsence }
@@ -87,8 +93,14 @@ class Person {
   }
 }
 
+/// Evento com chamada (ensaio, culto, vigília, etc.).
+///
+/// Mantém o nome [Rehearsal] por compatibilidade com Firestore (`rehearsals`)
+/// e com `attendance.rehearsalId`. Semanticamente é um Evento.
 class Rehearsal {
   final String id;
+  final EventType eventType;
+  final String? title;
   final DateTime dateTime;
   final RehearsalLevel level;
   final String regionId;
@@ -96,12 +108,20 @@ class Rehearsal {
   final String? poloId;
   final String? place;
   final String? description;
+  /// Modo de participantes. Ausente no Firestore → [EventParticipantMode.all].
+  final EventParticipantMode participantMode;
+  /// IDs dos membros escolhidos quando [participantMode] é [EventParticipantMode.selected].
   final List<String> expectedParticipants;
+  /// Lista congelada após o primeiro P/F/J ou ao finalizar a chamada.
+  /// `null` = ainda dinâmica (modo all pode incluir novos membros).
+  final List<String>? participantsSnapshot;
   final bool closed;
   final DateTime? closedAt;
 
   const Rehearsal({
     required this.id,
+    this.eventType = EventType.rehearsal,
+    this.title,
     required this.dateTime,
     required this.level,
     required this.regionId,
@@ -109,12 +129,23 @@ class Rehearsal {
     this.poloId,
     this.place,
     this.description,
+    this.participantMode = EventParticipantMode.all,
     this.expectedParticipants = const [],
+    this.participantsSnapshot,
     this.closed = false,
     this.closedAt,
   });
 
+  /// Título para UI: campo informado ou, se vazio, o rótulo do tipo.
+  String get displayTitle {
+    final t = title?.trim();
+    if (t != null && t.isNotEmpty) return t;
+    return eventType.label;
+  }
+
   Rehearsal copyWith({
+    EventType? eventType,
+    String? title,
     DateTime? dateTime,
     RehearsalLevel? level,
     String? regionId,
@@ -122,12 +153,17 @@ class Rehearsal {
     String? poloId,
     String? place,
     String? description,
+    EventParticipantMode? participantMode,
+    List<String>? expectedParticipants,
+    List<String>? participantsSnapshot,
+    bool clearSnapshot = false,
     bool? closed,
     DateTime? closedAt,
-    final List<String>? expectedParticipants,
   }) {
     return Rehearsal(
       id: id,
+      eventType: eventType ?? this.eventType,
+      title: title ?? this.title,
       dateTime: dateTime ?? this.dateTime,
       level: level ?? this.level,
       regionId: regionId ?? this.regionId,
@@ -135,14 +171,17 @@ class Rehearsal {
       poloId: poloId ?? this.poloId,
       place: place ?? this.place,
       description: description ?? this.description,
+      participantMode: participantMode ?? this.participantMode,
+      expectedParticipants: expectedParticipants ?? this.expectedParticipants,
+      participantsSnapshot: clearSnapshot
+          ? null
+          : (participantsSnapshot ?? this.participantsSnapshot),
       closed: closed ?? this.closed,
       closedAt: closedAt ?? this.closedAt,
-      expectedParticipants: expectedParticipants ?? this.expectedParticipants,
     );
   }
 
   bool get isClosed => dateTime.isBefore(DateTime.now());
-
 }
 
 class AttendanceRecord {

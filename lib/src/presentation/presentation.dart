@@ -1,6 +1,7 @@
 export 'admin/admin.dart';
 export 'attendance/attendance.dart';
 export 'auth/auth.dart';
+export 'event_report/event_reports.dart';
 export 'home/home.dart';
 export 'people/people.dart';
 export 'profile/profile.dart';

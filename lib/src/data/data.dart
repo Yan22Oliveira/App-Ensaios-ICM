@@ -1,6 +1,8 @@
 export 'firebase_auth_repository.dart';
 export 'firestore_access_request_repository.dart';
 export 'firestore_attendance_repository.dart';
+export 'event_participants_resolver.dart';
+export 'firestore_event_report_repository.dart';
 export 'firestore_geo_repository.dart';
 export 'firestore_people_repository.dart';
 export 'firestore_rehearsal_repository.dart';

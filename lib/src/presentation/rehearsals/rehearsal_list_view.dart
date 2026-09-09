@@ -32,7 +32,7 @@ class _RehearsalListViewState extends State<RehearsalListView> {
       appBar: AppBar(
         backgroundColor: AppTheme.primary,
         title: Text(
-          'Lista dos Ensaios',
+          'Eventos',
           style: TextStyle(
             fontWeight: FontWeight.w700,
           ),
@@ -52,7 +52,7 @@ class _RehearsalListViewState extends State<RehearsalListView> {
                     context.read<RehearsalListController>().insert(created);
                     if (context.mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Ensaio criado')),
+                        const SnackBar(content: Text('Evento criado')),
                       );
                     }
                   }
@@ -81,7 +81,7 @@ class _RehearsalListViewState extends State<RehearsalListView> {
                   onChanged: (v) => controller.search(v),
                   decoration: const InputDecoration(
                     prefixIcon: Icon(Icons.search),
-                    hintText: 'Pesquisar por região, local ou descrição.',
+                    hintText: 'Pesquisar por título, local ou descrição.',
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -306,8 +306,19 @@ class _RehearsalFilterSheetState extends State<_RehearsalFilterSheet> {
             }
           }
 
+          void toggleEventType(EventType type) {
+            final current = {...state.eventTypesFilter};
+            if (current.contains(type)) {
+              current.remove(type);
+            } else {
+              current.add(type);
+            }
+            controller.setEventTypesFilter(current);
+          }
+
           final hasAny =
               state.showClosed ||
+              state.eventTypesFilter.isNotEmpty ||
               state.levelsFilter.isNotEmpty ||
               state.levelFilter != null ||
               (state.regionFilter ?? '').isNotEmpty ||
@@ -378,6 +389,57 @@ class _RehearsalFilterSheetState extends State<_RehearsalFilterSheet> {
               ),
 
               const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: const [BoxShadow(blurRadius: 12, color: AppTheme.cardShadow)],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Tipo de evento', style: TextStyle(fontWeight: FontWeight.w800)),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        FilterChip(
+                          label: const Text('Todos'),
+                          selected: state.eventTypesFilter.isEmpty,
+                          onSelected: (_) => controller.setEventTypesFilter(const {}),
+                          backgroundColor: const Color(0xFFF1F5F9),
+                          selectedColor: AppTheme.primary.withValues(alpha: .18),
+                          checkmarkColor: AppTheme.primary,
+                          labelStyle: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: state.eventTypesFilter.isEmpty ? AppTheme.primary : Colors.black87,
+                          ),
+                        ),
+                        ...EventType.values.map((t) {
+                          final selected = state.eventTypesFilter.contains(t);
+                          return FilterChip(
+                            label: Text(t.label),
+                            selected: selected,
+                            onSelected: (_) => toggleEventType(t),
+                            backgroundColor: const Color(0xFFF1F5F9),
+                            selectedColor: AppTheme.primary.withValues(alpha: .18),
+                            checkmarkColor: AppTheme.primary,
+                            labelStyle: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              color: selected ? AppTheme.primary : Colors.black87,
+                            ),
+                          );
+                        }),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 12),
               if (_loading) const LinearProgressIndicator(minHeight: 2),
               const SizedBox(height: 8),
 
@@ -386,7 +448,7 @@ class _RehearsalFilterSheetState extends State<_RehearsalFilterSheet> {
                 DropdownButtonFormField<RehearsalLevel?>(
                   value: effectiveLevel,
                   decoration: const InputDecoration(
-                    labelText: 'Nível do ensaio',
+                    labelText: 'Nível',
                     border: OutlineInputBorder(),
                   ),
                   items: [
@@ -623,22 +685,24 @@ class _RehearsalTile extends StatelessWidget {
               Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(
-                    //'${_levelLabel(item.level)} • ${item.regionId}',
-                     geo.levelName(item),
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                    ),
+                    item.displayTitle,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 4),
+                  Text(
+                    geo.levelName(item),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
                   Text('${_fmtHour(item.dateTime)}  •  ${item.place ?? ''}', maxLines: 1, overflow: TextOverflow.ellipsis),
-                  if ((item.description ?? '').isNotEmpty) ...[
-                    const SizedBox(height: 2),
-                    Text(item.description!, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.black54)),
-                  ],
+                  const SizedBox(height: 6),
+                  EventTypeChip(type: item.eventType),
                 ]),
               ),
-              if (!closed)
-                PopupMenuButton<String>(
+              PopupMenuButton<String>(
                   onSelected: (value) async {
                     if (value == 'edit') {
                       final updated = await Navigator.push<Rehearsal?>(
@@ -646,17 +710,24 @@ class _RehearsalTile extends StatelessWidget {
                         MaterialPageRoute(builder: (_) => RehearsalCreateView(existing: item)),
                       );
                       if (updated != null && context.mounted) {
-                        context.read<RehearsalListController>().replace(updated); // veja abaixo
+                        context.read<RehearsalListController>().replace(updated);
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Ensaio atualizado')),
+                          const SnackBar(content: Text('Evento atualizado')),
                         );
+                      }
+                    } else if (value == 'attendance') {
+                      _openAttendance(context, item.id);
+                    } else if (value == 'report') {
+                      await openEventReport(context, item.id);
+                      if (context.mounted) {
+                        await context.read<RehearsalListController>().refreshReportStatuses();
                       }
                     } else if (value == 'delete') {
                       final ok = await showDialog<bool>(
                         context: context,
                         builder: (_) => AlertDialog(
-                          title: const Text('Excluir ensaio'),
-                          content: const Text('Tem certeza que deseja excluir este ensaio? Essa ação não pode ser desfeita.'),
+                          title: const Text('Excluir evento'),
+                          content: const Text('Tem certeza que deseja excluir este evento? Essa ação não pode ser desfeita.'),
                           actions: [
                             TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
                             FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Excluir')),
@@ -670,16 +741,38 @@ class _RehearsalTile extends StatelessWidget {
                         if (context.mounted) {
                           context.read<RehearsalListController>().remove(item.id);
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Ensaio excluído')),
+                            const SnackBar(content: Text('Evento excluído')),
                           );
                         }
                       }
                     }
                   },
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(value: 'edit', child: ListTile(leading: Icon(Icons.edit_rounded), title: Text('Editar'))),
-                    PopupMenuItem(value: 'delete', child: ListTile(leading: Icon(Icons.delete_rounded), title: Text('Excluir'))),
-                  ],
+                  itemBuilder: (_) {
+                    final status = context.read<RehearsalListController>().state.reportStatusByEventId[item.id];
+                    final reportLabel = switch (status) {
+                      null => 'Relatório do evento',
+                      EventReportStatus.draft => 'Continuar relatório',
+                      EventReportStatus.finalized => 'Ver relatório',
+                    };
+                    return [
+                      const PopupMenuItem(value: 'edit', child: ListTile(leading: Icon(Icons.edit_rounded), title: Text('Editar evento'))),
+                      PopupMenuItem(
+                        value: 'attendance',
+                        child: ListTile(
+                          leading: const Icon(Icons.how_to_reg_rounded),
+                          title: Text(closed ? 'Ver chamada' : 'Realizar chamada'),
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'report',
+                        child: ListTile(
+                          leading: const Icon(Icons.description_outlined),
+                          title: Text(reportLabel),
+                        ),
+                      ),
+                      const PopupMenuItem(value: 'delete', child: ListTile(leading: Icon(Icons.delete_rounded), title: Text('Excluir evento'))),
+                    ];
+                  },
                 ),
             ]),
           ),

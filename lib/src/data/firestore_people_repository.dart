@@ -254,6 +254,24 @@ class FirestorePeopleRepository implements IPersonRepository {
   }
 
   @override
+  Future<List<Person>> listByIds(List<String> ids) async {
+    final unique = ids.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet().toList();
+    if (unique.isEmpty) return const [];
+    final out = <Person>[];
+    const chunkSize = 10;
+    for (var i = 0; i < unique.length; i += chunkSize) {
+      final end = (i + chunkSize < unique.length) ? i + chunkSize : unique.length;
+      final chunk = unique.sublist(i, end);
+      final snaps = await Future.wait(chunk.map((id) => _col.doc(id).get()));
+      for (final snap in snaps) {
+        if (snap.exists) out.add(_fromDoc(snap));
+      }
+    }
+    out.sort((a, b) => a.fullName.compareTo(b.fullName));
+    return out;
+  }
+
+  @override
   Future<List<Person>> bulkCreate(List<Person> people) async {
     if (people.isEmpty) return const [];
     final created = <Person>[];

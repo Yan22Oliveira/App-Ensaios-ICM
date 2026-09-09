@@ -16,6 +16,8 @@ class RehearsalListState extends Equatable {
   final bool loading;
   final List<Rehearsal> items;
   final String? search;
+  /// Filtro por tipo de evento (multi-seleção). Vazio = todos os tipos.
+  final Set<EventType> eventTypesFilter;
   /// Filtro por níveis (multi-seleção). Vazio = "todos os níveis permitidos".
   final Set<RehearsalLevel> levelsFilter;
   final RehearsalLevel? levelFilter;
@@ -27,6 +29,8 @@ class RehearsalListState extends Equatable {
   final String? poloFilter;
   /// Quando definido, lista apenas ensaios do dia selecionado (00:00–23:59).
   final DateTime? dayFilter;
+  /// Status do relatório por eventId. Ausência da chave = não iniciado.
+  final Map<String, EventReportStatus> reportStatusByEventId;
   /// true = mostrar apenas ensaios encerrados; false = próximos
   final bool showClosed;
 
@@ -34,12 +38,14 @@ class RehearsalListState extends Equatable {
     required this.loading,
     required this.items,
     this.search,
+    this.eventTypesFilter = const {},
     this.levelsFilter = const {},
     this.levelFilter,
     this.regionFilter,
     this.areaFilter,
     this.poloFilter,
     this.dayFilter,
+    this.reportStatusByEventId = const {},
     this.showClosed = false,
   });
 
@@ -50,24 +56,28 @@ class RehearsalListState extends Equatable {
     bool? loading,
     List<Rehearsal>? items,
     Object? search = _omit,
+    Set<EventType>? eventTypesFilter,
     Set<RehearsalLevel>? levelsFilter,
     Object? levelFilter = _omit,
     Object? regionFilter = _omit,
     Object? areaFilter = _omit,
     Object? poloFilter = _omit,
     Object? dayFilter = _omit,
+    Map<String, EventReportStatus>? reportStatusByEventId,
     bool? showClosed,
   }) {
     return RehearsalListState(
       loading: loading ?? this.loading,
       items: items ?? this.items,
       search: identical(search, _omit) ? this.search : search as String?,
+      eventTypesFilter: eventTypesFilter ?? this.eventTypesFilter,
       levelsFilter: levelsFilter ?? this.levelsFilter,
       levelFilter: identical(levelFilter, _omit) ? this.levelFilter : levelFilter as RehearsalLevel?,
       regionFilter: identical(regionFilter, _omit) ? this.regionFilter : regionFilter as String?,
       areaFilter: identical(areaFilter, _omit) ? this.areaFilter : areaFilter as String?,
       poloFilter: identical(poloFilter, _omit) ? this.poloFilter : poloFilter as String?,
       dayFilter: identical(dayFilter, _omit) ? this.dayFilter : dayFilter as DateTime?,
+      reportStatusByEventId: reportStatusByEventId ?? this.reportStatusByEventId,
       showClosed: showClosed ?? this.showClosed,
     );
   }
@@ -77,21 +87,24 @@ class RehearsalListState extends Equatable {
     loading,
     items,
     search,
+    eventTypesFilter,
     levelsFilter,
     levelFilter,
     regionFilter,
     areaFilter,
     poloFilter,
     dayFilter,
+    reportStatusByEventId,
     showClosed,
   ];
 }
 
 class RehearsalListController extends Cubit<RehearsalListState> {
   final IRehearsalRepository repo;
+  final IEventReportRepository reportRepo;
   StreamSubscription<List<Rehearsal>>? _subscription;
 
-  RehearsalListController(this.repo) : super(RehearsalListState.initial());
+  RehearsalListController(this.repo, this.reportRepo) : super(RehearsalListState.initial());
 
   /// Inicia o stream em tempo real (lista atualiza sozinha).
   void startWatch() {
@@ -116,6 +129,7 @@ class RehearsalListController extends Cubit<RehearsalListState> {
           byId[r.id] = r;
         }
         emit(state.copyWith(loading: false, items: byId.values.toList()));
+        _loadReportStatuses(byId.keys.toList());
       },
       onError: (e, st) {
         debugPrint('[RehearsalList] stream.listen ERROR: $e');
@@ -140,6 +154,7 @@ class RehearsalListController extends Cubit<RehearsalListState> {
         ? await repo.listClosed()
         : await repo.listUpcoming();
     emit(state.copyWith(loading: false, items: items));
+    await _loadReportStatuses(items.map((e) => e.id).toList());
   }
 
   Future<void> load() async {
@@ -148,6 +163,32 @@ class RehearsalListController extends Cubit<RehearsalListState> {
         ? await repo.listClosed()
         : await repo.listUpcoming();
     emit(state.copyWith(loading: false, items: items));
+    await _loadReportStatuses(items.map((e) => e.id).toList());
+  }
+
+  Future<void> refreshReportStatuses() async {
+    await _loadReportStatuses(state.items.map((e) => e.id).toList());
+  }
+
+  Future<void> _loadReportStatuses(List<String> eventIds) async {
+    if (eventIds.isEmpty) {
+      emit(state.copyWith(reportStatusByEventId: const {}));
+      return;
+    }
+    final map = <String, EventReportStatus>{};
+    const chunkSize = 20;
+    for (var i = 0; i < eventIds.length; i += chunkSize) {
+      final end = (i + chunkSize).clamp(0, eventIds.length);
+      final chunk = eventIds.sublist(i, end);
+      await Future.wait(chunk.map((id) async {
+        try {
+          final report = await reportRepo.getByEventId(id);
+          if (report != null) map[id] = report.status;
+        } catch (_) {}
+      }));
+    }
+    if (isClosed) return;
+    emit(state.copyWith(reportStatusByEventId: map));
   }
 
   @override
@@ -162,6 +203,7 @@ class RehearsalListController extends Cubit<RehearsalListState> {
   void clearFilters() {
     emit(state.copyWith(
       search: '',
+      eventTypesFilter: const {},
       levelsFilter: const {},
       levelFilter: null,
       regionFilter: null,
@@ -170,6 +212,10 @@ class RehearsalListController extends Cubit<RehearsalListState> {
       dayFilter: null,
       showClosed: false,
     ));
+  }
+
+  void setEventTypesFilter(Set<EventType> types) {
+    emit(state.copyWith(eventTypesFilter: {...types}));
   }
 
   void setLevelsFilter(Set<RehearsalLevel> levels) {
@@ -225,10 +271,15 @@ class RehearsalListController extends Cubit<RehearsalListState> {
     if (s.isNotEmpty) {
       r = r
           .where((e) =>
+              e.displayTitle.toLowerCase().contains(s) ||
+              e.eventType.label.toLowerCase().contains(s) ||
               e.regionId.toLowerCase().contains(s) ||
               (e.place ?? '').toLowerCase().contains(s) ||
               (e.description ?? '').toLowerCase().contains(s))
           .toList();
+    }
+    if (state.eventTypesFilter.isNotEmpty) {
+      r = r.where((e) => state.eventTypesFilter.contains(e.eventType)).toList();
     }
     if (state.levelFilter != null) {
       r = r.where((e) => e.level == state.levelFilter).toList();

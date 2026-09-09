@@ -12,7 +12,9 @@ service cloud.firestore {
     }
 
     function isActive() {
-      return isSignedIn() && userDoc().data.active == true;
+      return isSignedIn()
+        && exists(/databases/$(db)/documents/users/$(request.auth.uid))
+        && userDoc().data.active == true;
     }
 
     function role() {
@@ -23,26 +25,48 @@ service cloud.firestore {
     function userAreaId()   { return userDoc().data.areaId; }
     function userPoloId()   { return userDoc().data.poloId; }
 
-    // data = resource.data ou request.resource.data (dependendo do uso)
+    function regionMaanaimId(regionId) {
+      return exists(/databases/$(db)/documents/regions/$(regionId))
+        ? get(/databases/$(db)/documents/regions/$(regionId)).data.maanaimId
+        : '';
+    }
+
+    // get/create/update/delete: pode usar get()/exists() (documento único).
     function canSeeRehearsal(data) {
       return isActive() && (
         role() == 'admin' ||
-        // Maanaim: pode ver ensaios do próprio maanaim + regiões/áreas/polos abaixo.
-        // (no app, o id do maanaim fica em user.regionId)
+        // Maanaim: ensaio do próprio maanaim, ou região/área/polo cujo doc em /regions
+        // tem maanaimId == user.regionId (id do maanaim no perfil).
         (role() == 'maanaim' && (
           (data.level == 'maanaim' && data.regionId == userRegionId()) ||
-          (data.level in ['region','area','polo'] && exists(/databases/$(db)/documents/maanains/$(userRegionId())/regions/$(data.regionId)))
+          (data.level in ['region','area','polo'] && regionMaanaimId(data.regionId) == userRegionId())
         )) ||
 
-        // Região: pode ver ensaios da região + áreas + polos dessa região
         (role() == 'region'  && data.regionId == userRegionId() && (data.level in ['region','area','polo'])) ||
-
-        // Área: pode ver ensaios da área + polos dessa área
         (role() == 'area'    && data.areaId == userAreaId() && (data.level in ['area','polo'])) ||
+        (role() == 'polo'    && data.level == 'polo' && data.poloId == userPoloId()) ||
 
-        // Polo: só ensaios do polo
-        (role() == 'polo'    && data.level == 'polo'   && data.poloId   == userPoloId())   ||
+        (role() == 'readonly' && (
+          (data.level == 'polo'   && data.poloId   == userPoloId()) ||
+          (data.level == 'area'   && data.areaId   == userAreaId()) ||
+          (data.level == 'region' && data.regionId == userRegionId())
+        ))
+      );
+    }
 
+    // list: Firestore NÃO avalia get()/exists() em queries. As constraints da query
+    // precisam provar o acesso. Para maanaim, a listagem de região/área/polo usa
+    // whereIn(regionId) — o cliente ainda filtra pelo conjunto de regiões do maanaim.
+    function canListRehearsal(data) {
+      return isActive() && (
+        role() == 'admin' ||
+        (role() == 'maanaim' && (
+          (data.level == 'maanaim' && data.regionId == userRegionId()) ||
+          (data.level in ['region','area','polo'])
+        )) ||
+        (role() == 'region'  && data.regionId == userRegionId() && (data.level in ['region','area','polo'])) ||
+        (role() == 'area'    && data.areaId == userAreaId() && (data.level in ['area','polo'])) ||
+        (role() == 'polo'    && data.level == 'polo' && data.poloId == userPoloId()) ||
         (role() == 'readonly' && (
           (data.level == 'polo'   && data.poloId   == userPoloId()) ||
           (data.level == 'area'   && data.areaId   == userAreaId()) ||
@@ -62,11 +86,11 @@ service cloud.firestore {
     }
 
     match /rehearsals/{id} {
-      // leitura respeitando escopo
-      allow read: if canSeeRehearsal(resource.data);
+      allow get: if canSeeRehearsal(resource.data);
+      allow list: if canListRehearsal(resource.data);
 
-      // criação/edição/deleção: valida o NOVO conteúdo no escopo
-      allow create, update, delete: if canSeeRehearsal(request.resource.data);
+      allow create, update: if canSeeRehearsal(request.resource.data);
+      allow delete: if canSeeRehearsal(resource.data);
     }
 
     match /people/{id} {
@@ -74,6 +98,12 @@ service cloud.firestore {
       allow read: if isActive();
       // ajuste se quiser restringir por papel
       allow create, update, delete: if isActive();
+    }
+
+    match /eventReports/{id} {
+      allow read: if isActive();
+      allow create, update: if isActive();
+      allow delete: if isActive() && (role() in ['admin','region','area','polo','maanaim']);
     }
 
     match /attendance/{id} {

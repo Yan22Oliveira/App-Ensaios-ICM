@@ -2,28 +2,32 @@ import '../../src.dart';
 
 abstract class IRehearsalRepository {
   Future<List<Rehearsal>> listUpcoming();
-  /// Stream de ensaios futuros (a partir de hoje), atualizado em tempo real.
+  /// Stream de eventos futuros (a partir de hoje), atualizado em tempo real.
   Stream<List<Rehearsal>> watchUpcoming();
-  /// Ensaios já encerrados (closed == true), mais recentes primeiro.
+  /// Eventos já encerrados (closed == true), mais recentes primeiro.
   Future<List<Rehearsal>> listClosed();
-  /// Stream de ensaios encerrados em tempo real.
+  /// Stream de eventos encerrados em tempo real.
   Stream<List<Rehearsal>> watchClosed();
   Future<Rehearsal> getById(String id);
 
-  /// Retorna ensaios cujo `dateTime` está entre [start, end] (limites inclusivos).
+  /// Retorna eventos cujo `dateTime` está entre [start, end] (limites inclusivos).
   Future<List<Rehearsal>> listBetween(DateTime start, DateTime end);
 
   Future<Rehearsal> create({
     required DateTime dateTime,
     required RehearsalLevel level,
     required String regionId,
+    required EventType eventType,
+    String? title,
     String? areaId,
     String? poloId,
     String? place,
     String? description,
+    EventParticipantMode participantMode = EventParticipantMode.all,
+    List<String> expectedParticipants = const [],
   });
 
-  /// Retorna o próximo ensaio (dateTime > agora), ou null se não houver.
+  /// Retorna o próximo evento (dateTime > agora), ou null se não houver.
   Future<Rehearsal?> nextUpcoming();
 
   /// finalizar/encerrar
@@ -34,14 +38,20 @@ abstract class IRehearsalRepository {
     required DateTime dateTime,
     required RehearsalLevel level,
     required String regionId,
+    required EventType eventType,
+    String? title,
     String? areaId,
     String? poloId,
     String? place,
     String? description,
-    bool? closed,        // opcional, caso queira alterar o status
-    DateTime? closedAt,  // opcional
+    EventParticipantMode participantMode = EventParticipantMode.all,
+    List<String> expectedParticipants = const [],
+    bool? closed,
+    DateTime? closedAt,
   });
 
-  Future<void> delete(String id);
+  /// Congela a lista da chamada (primeiro P/F/J ou finalizar).
+  Future<void> setParticipantsSnapshot(String id, List<String> personIds);
 
+  Future<void> delete(String id);
 }

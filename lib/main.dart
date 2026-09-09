@@ -43,6 +43,9 @@ class ClassAttendanceApp extends StatelessWidget {
         RepositoryProvider<IPersonRepository>.value(value: peopleRepo),
         RepositoryProvider<IRehearsalRepository>.value(value: rehearsalRepo),
         RepositoryProvider<IAttendanceRepository>.value(value: attendanceRepo),
+        RepositoryProvider<IEventReportRepository>(
+          create: (_) => FirestoreEventReportRepository(),
+        ),
         RepositoryProvider<IGeoRepository>.value(value: geoRepo),
         RepositoryProvider<GeoNameResolver>(
           create: (_) => geoResolver,
@@ -63,7 +66,7 @@ class ClassAttendanceApp extends StatelessWidget {
         ],
         child: _ScopeBinder(
           child: MaterialApp(
-            title: 'Ensaios ICM',
+            title: 'Frequência ICM',
             theme: AppTheme.light(),
             locale: const Locale('pt', 'BR'),
             supportedLocales: const [
