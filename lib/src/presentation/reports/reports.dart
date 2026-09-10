@@ -1,3 +1,8 @@
+export 'attendance_level.dart';
+export 'individual_report_controller.dart';
+export 'person_event_history_view.dart';
+export 'person_report_detail_view.dart';
+export 'report_metrics.dart';
 export 'report_pdf_builder.dart';
 export 'widgets/widgets.dart';
 export 'reports_controller.dart';

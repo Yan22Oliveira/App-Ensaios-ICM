@@ -78,10 +78,17 @@ service cloud.firestore {
     // -------- Collections --------
 
     match /users/{uid} {
-      // o próprio usuário pode ler seu perfil
-      allow read: if isSignedIn() && request.auth.uid == uid;
-      // admin pode criar/atualizar perfil (ex.: ao aprovar solicitação de acesso)
-      allow create, update: if isActive() && role() == 'admin';
+      allow get: if isSignedIn() && (request.auth.uid == uid || (isActive() && role() == 'admin'));
+      allow list: if isActive() && role() == 'admin';
+      allow create: if isActive() && role() == 'admin';
+      allow update: if (isActive() && role() == 'admin')
+        || (
+          isSignedIn()
+          && request.auth.uid == uid
+          && isActive()
+          && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['displayName', 'phone', 'updatedAt', 'photoUrl'])
+        );
       allow delete: if false;
     }
 

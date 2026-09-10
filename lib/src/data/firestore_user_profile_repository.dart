@@ -19,25 +19,52 @@ class FirestoreUserProfileRepository implements IUserProfileRepository {
 
   UserProfile? _fromDoc(String uid, Map<String, dynamic>? m) {
     if (m == null) return null;
-    final role = roleFromString(m['role'] as String?);
-    return UserProfile(
-      uid: uid,
-      displayName: (m['displayName'] as String? ?? '').trim(),
-      email: (m['email'] as String? ?? '').trim(),
-      role: role,
-      active: (m['active'] as bool?) ?? false,
-      regionId: m['regionId'] as String?,
-      areaId: m['areaId'] as String?,
-      poloId: m['poloId'] as String?,
-      phone: m['phone'] as String?,
-      photoUrl: m['photoUrl'] as String?,
-      createdAt: (m['createdAt'] is Timestamp)
-          ? (m['createdAt'] as Timestamp).toDate()
-          : null,
-      updatedAt: (m['updatedAt'] is Timestamp)
-          ? (m['updatedAt'] as Timestamp).toDate()
-          : null,
-    );
+    try {
+      return UserProfile(
+        uid: uid,
+        displayName: (_asString(m['displayName']) ?? '').trim(),
+        email: (_asString(m['email']) ?? '').trim(),
+        role: roleFromString(_asString(m['role'])),
+        active: _asBool(m['active']),
+        regionId: _asString(m['regionId']),
+        areaId: _asString(m['areaId']),
+        poloId: _asString(m['poloId']),
+        phone: _asString(m['phone']),
+        photoUrl: _asString(m['photoUrl']),
+        createdAt: _asDate(m['createdAt']),
+        updatedAt: _asDate(m['updatedAt']),
+      );
+    } catch (_) {
+      return UserProfile(
+        uid: uid,
+        displayName: (_asString(m['displayName']) ?? uid).trim(),
+        email: (_asString(m['email']) ?? '').trim(),
+        role: UserRole.readonly,
+        active: _asBool(m['active']),
+      );
+    }
+  }
+
+  String? _asString(dynamic v) {
+    if (v == null) return null;
+    if (v is String) return v;
+    return v.toString();
+  }
+
+  bool _asBool(dynamic v) {
+    if (v is bool) return v;
+    if (v is num) return v != 0;
+    if (v is String) {
+      final s = v.toLowerCase().trim();
+      return s == 'true' || s == '1';
+    }
+    return false;
+  }
+
+  DateTime? _asDate(dynamic v) {
+    if (v is Timestamp) return v.toDate();
+    if (v is DateTime) return v;
+    return null;
   }
 
   @override
@@ -67,6 +94,76 @@ class FirestoreUserProfileRepository implements IUserProfileRepository {
       ...patch,
       'updatedAt': FieldValue.serverTimestamp(),
     });
+  }
+
+  @override
+  Future<List<UserProfile>> listAll() async {
+    QuerySnapshot<Map<String, dynamic>> snap;
+    try {
+      snap = await _db.collection('users').get();
+    } on FirebaseException catch (e) {
+      if (e.code != 'permission-denied' && e.code != 'unavailable') {
+        return [];
+      }
+      try {
+        snap = await _db.collection('users').get(const GetOptions(source: Source.cache));
+      } catch (_) {
+        return [];
+      }
+    } catch (_) {
+      return [];
+    }
+    final list = <UserProfile>[];
+    for (final d in snap.docs) {
+      final profile = _fromDoc(d.id, d.data());
+      if (profile != null) list.add(profile);
+    }
+    list.sort((a, b) => a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase()));
+    return list;
+  }
+
+  @override
+  Future<UserProfile?> getById(String uid) async {
+    try {
+      final doc = await _db.collection('users').doc(uid).get();
+      if (!doc.exists) return null;
+      return _fromDoc(uid, doc.data());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> updateById(UserProfile profile) async {
+    await _db.collection('users').doc(profile.uid).set({
+      'displayName': profile.displayName.trim(),
+      'email': profile.email.trim(),
+      'role': roleToString(profile.role),
+      'active': profile.active,
+      'regionId': profile.regionId,
+      'areaId': profile.areaId,
+      'poloId': profile.poloId,
+      'phone': (profile.phone ?? '').trim().isEmpty ? null : profile.phone!.trim(),
+      'scopeKey': _scopeKey(profile),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  String? _scopeKey(UserProfile p) {
+    switch (p.role) {
+      case UserRole.region:
+        return (p.regionId == null ? null : 'region:${p.regionId}');
+      case UserRole.area:
+        return (p.areaId == null ? null : 'area:${p.areaId}');
+      case UserRole.polo:
+        return (p.poloId == null ? null : 'polo:${p.poloId}');
+      case UserRole.maanaim:
+        return 'maanaim';
+      case UserRole.admin:
+        return 'admin';
+      case UserRole.readonly:
+        return 'readonly';
+    }
   }
 
   @override

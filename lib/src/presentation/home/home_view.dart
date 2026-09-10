@@ -3,7 +3,6 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../src.dart';
-import '../admin/access_requests_view.dart';
 import '../profile/profile.dart';
 import '../rehearsals/rehearsal_list_view.dart' as rehe;
 import '../people/people_list_view.dart' as ppl;
@@ -354,12 +353,12 @@ class _QuickActionsGrid extends StatelessWidget {
     if (isAdmin) {
       items.add(
         _QuickActionItem(
-          label: 'Solicitações',
+          label: 'Acessos',
           icon: Icons.verified_user_outlined,
           color: AppTheme.accentTeal,
           onTap: () {
             Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const AccessRequestsView()));
+                MaterialPageRoute(builder: (_) => const AccessHubView()));
           },
           badge: pendingRequests > 0 ? pendingRequests.toString() : null,
         ),

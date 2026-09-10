@@ -20,8 +20,8 @@ class FirestoreAccessRequestRepository implements IAccessRequestRepository {
 
   // ---------- mapeamento ----------
   AccessRequest _fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data()!;
-    final statusStr = (d['status'] as String?) ?? 'pending';
+    final d = doc.data() ?? const <String, dynamic>{};
+    final statusStr = _asString(d['status']) ?? 'pending';
     final status = switch (statusStr) {
       'approved' => AccessStatus.approved,
       'rejected' => AccessStatus.rejected,
@@ -30,20 +30,28 @@ class FirestoreAccessRequestRepository implements IAccessRequestRepository {
 
     return AccessRequest(
       id: doc.id,
-      requesterUid: (d['requesterUid'] as String? ?? '').trim(),
-      email: (d['email'] as String? ?? '').trim(),
-      displayName: (d['displayName'] as String? ?? '').trim(),
-      phone: d['phone'] as String?,
+      requesterUid: (_asString(d['requesterUid']) ?? '').trim(),
+      email: (_asString(d['email']) ?? '').trim(),
+      displayName: (_asString(d['displayName']) ?? '').trim(),
+      phone: _asString(d['phone']),
       status: status,
-      createdAt: (d['createdAt'] is Timestamp)
-          ? (d['createdAt'] as Timestamp).toDate()
-          : null,
-      decidedAt: (d['decidedAt'] is Timestamp)
-          ? (d['decidedAt'] as Timestamp).toDate()
-          : null,
-      decidedBy: d['decidedBy'] as String?,
-      reason: d['reason'] as String?,
+      createdAt: _asDate(d['createdAt']),
+      decidedAt: _asDate(d['decidedAt']),
+      decidedBy: _asString(d['decidedBy']),
+      reason: _asString(d['reason']),
     );
+  }
+
+  String? _asString(dynamic v) {
+    if (v == null) return null;
+    if (v is String) return v;
+    return v.toString();
+  }
+
+  DateTime? _asDate(dynamic v) {
+    if (v is Timestamp) return v.toDate();
+    if (v is DateTime) return v;
+    return null;
   }
 
   // =========================================================
@@ -112,6 +120,26 @@ class FirestoreAccessRequestRepository implements IAccessRequestRepository {
   @override
   Stream<int> watchPendingCount() {
     return _col.where('status', isEqualTo: 'pending').snapshots().map((s) => s.size);
+  }
+
+  @override
+  Future<List<AccessRequest>> listApproved() async {
+    try {
+      final snap = await _col.where('status', isEqualTo: 'approved').get();
+      return snap.docs.map(_fromDoc).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  @override
+  Future<List<AccessRequest>> listAll() async {
+    try {
+      final snap = await _col.get();
+      return snap.docs.map(_fromDoc).toList();
+    } catch (_) {
+      return listApproved();
+    }
   }
 
   @override

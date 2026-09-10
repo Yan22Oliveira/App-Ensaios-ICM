@@ -7,7 +7,7 @@ import 'package:equatable/equatable.dart';
 
 import '../../src.dart';
 
-enum ReportsTab { overview, byPerson, byRehearsal, raw }
+enum ReportsTab { byRehearsal, byPerson }
 
 class ReportFilters extends Equatable {
   final DateTimeRange? range;
@@ -52,22 +52,71 @@ class ReportFilters extends Equatable {
   List<Object?> get props => [range, level, eventType, regionId, areaId, poloId, onlyWithRecords];
 }
 
+class PersonEventMark extends Equatable {
+  final Rehearsal rehearsal;
+  final AttendanceStatus status;
+
+  const PersonEventMark({required this.rehearsal, required this.status});
+
+  @override
+  List<Object?> get props => [rehearsal, status];
+}
+
 class PersonSummary extends Equatable {
   final Person person;
   final int present;
   final int unjustified;
   final int justified;
+  final List<PersonEventMark> events;
 
-  const PersonSummary({required this.person, required this.present, required this.unjustified, required this.justified});
+  const PersonSummary({
+    required this.person,
+    required this.present,
+    required this.unjustified,
+    required this.justified,
+    this.events = const [],
+  });
 
+  /// Eventos em que a pessoa teve registro (P/F/J).
+  int get eventCount => present + unjustified + justified;
+
+  /// Presença = presentes / (P + F + J). Justificadas entram no denominador.
   double get attendanceRate {
-    final total = present + unjustified + justified;
+    final total = eventCount;
     if (total == 0) return 0;
     return present / total;
   }
 
+  factory PersonSummary.fromMarks({
+    required Person person,
+    required List<PersonEventMark> marks,
+  }) {
+    var present = 0, unjustified = 0, justified = 0;
+    for (final m in marks) {
+      switch (m.status) {
+        case AttendanceStatus.present:
+          present++;
+        case AttendanceStatus.unjustifiedAbsence:
+          unjustified++;
+        case AttendanceStatus.justifiedAbsence:
+          justified++;
+        case AttendanceStatus.unmarked:
+          break;
+      }
+    }
+    final sorted = List<PersonEventMark>.from(marks)
+      ..sort((a, b) => b.rehearsal.dateTime.compareTo(a.rehearsal.dateTime));
+    return PersonSummary(
+      person: person,
+      present: present,
+      unjustified: unjustified,
+      justified: justified,
+      events: sorted,
+    );
+  }
+
   @override
-  List<Object?> get props => [person, present, unjustified, justified];
+  List<Object?> get props => [person, present, unjustified, justified, events];
 }
 
 class RehearsalSummary extends Equatable {
@@ -78,8 +127,10 @@ class RehearsalSummary extends Equatable {
 
   const RehearsalSummary({required this.rehearsal, required this.present, required this.unjustified, required this.justified});
 
+  int get participantCount => present + unjustified + justified;
+
   double get attendanceRate {
-    final total = present + unjustified + justified;
+    final total = participantCount;
     if (total == 0) return 0;
     return present / total;
   }
@@ -99,6 +150,10 @@ class ReportsState extends Equatable {
   final double attendanceRate;
   final double justificationRate;
   final int peopleCovered;
+  final int presentCount;
+  final int unjustifiedCount;
+  final int justifiedCount;
+  final String? errorMessage;
 
   const ReportsState({
     required this.loading,
@@ -110,11 +165,17 @@ class ReportsState extends Equatable {
     required this.attendanceRate,
     required this.justificationRate,
     required this.peopleCovered,
+    required this.presentCount,
+    required this.unjustifiedCount,
+    required this.justifiedCount,
+    this.errorMessage,
   });
+
+  int get totalParticipations => presentCount + unjustifiedCount + justifiedCount;
 
   factory ReportsState.initial() => ReportsState(
     loading: false,
-    tab: ReportsTab.overview,
+    tab: ReportsTab.byRehearsal,
     filters: ReportFilters(range: null),
     byPerson: const [],
     byRehearsal: const [],
@@ -122,6 +183,9 @@ class ReportsState extends Equatable {
     attendanceRate: 0,
     justificationRate: 0,
     peopleCovered: 0,
+    presentCount: 0,
+    unjustifiedCount: 0,
+    justifiedCount: 0,
   );
 
   ReportsState copyWith({
@@ -134,6 +198,11 @@ class ReportsState extends Equatable {
     double? attendanceRate,
     double? justificationRate,
     int? peopleCovered,
+    int? presentCount,
+    int? unjustifiedCount,
+    int? justifiedCount,
+    String? errorMessage,
+    bool clearError = false,
   }) {
     return ReportsState(
       loading: loading ?? this.loading,
@@ -145,13 +214,18 @@ class ReportsState extends Equatable {
       attendanceRate: attendanceRate ?? this.attendanceRate,
       justificationRate: justificationRate ?? this.justificationRate,
       peopleCovered: peopleCovered ?? this.peopleCovered,
+      presentCount: presentCount ?? this.presentCount,
+      unjustifiedCount: unjustifiedCount ?? this.unjustifiedCount,
+      justifiedCount: justifiedCount ?? this.justifiedCount,
+      errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
     );
   }
 
   @override
   List<Object?> get props => [
     loading, tab, filters, byPerson, byRehearsal,
-    totalRehearsals, attendanceRate, justificationRate, peopleCovered
+    totalRehearsals, attendanceRate, justificationRate, peopleCovered,
+    presentCount, unjustifiedCount, justifiedCount, errorMessage,
   ];
 }
 
@@ -215,8 +289,9 @@ class ReportsController extends Cubit<ReportsState> {
   }
 
   Future<void> _refresh(ReportFilters newFilters) async {
-    emit(state.copyWith(loading: true, filters: newFilters));
+    emit(state.copyWith(loading: true, filters: newFilters, clearError: true));
 
+    try {
     final effectiveRange = newFilters.range ?? _defaultRange();
 
     // Garante escopo do perfil no repositório de ensaios (ex.: polo só vê ensaios do seu polo)
@@ -232,20 +307,14 @@ class ReportsController extends Cubit<ReportsState> {
 
     final inRange = allRehearsals.where((r) {
       return !r.dateTime.isBefore(effectiveRange.start) && !r.dateTime.isAfter(effectiveRange.end);
-    }).where((r) {
-      if (newFilters.eventType != null && r.eventType != newFilters.eventType) return false;
-      if (newFilters.level != null && r.level != newFilters.level) return false;
-      if (newFilters.regionId != null && r.regionId != newFilters.regionId) return false;
-      if (newFilters.areaId != null && r.areaId != newFilters.areaId) return false;
-      if (newFilters.poloId != null && r.poloId != newFilters.poloId) return false;
-      return true;
-    }).toList();
+    }).where((r) => rehearsalMatchesFilters(r, newFilters)).toList();
 
     debugPrint('[Reports] inRange (após filtros level/region/area/polo): ${inRange.length} ensaio(s)');
 
     // Computa summaries por ensaio
     final byRehearsal = <RehearsalSummary>[];
     final personCounters = <String, (int p, int f, int j)>{};
+    final personMarks = <String, List<PersonEventMark>>{};
 
     for (final reh in inRange) {
       final recs = await attendanceRepo.listByRehearsal(reh.id);
@@ -264,6 +333,9 @@ class ReportsController extends Cubit<ReportsState> {
           AttendanceStatus.justifiedAbsence => (tuple.$1, tuple.$2, tuple.$3 + 1),
           _ => tuple,
         };
+        personMarks.putIfAbsent(r.personId, () => []).add(
+          PersonEventMark(rehearsal: reh, status: r.status),
+        );
       }
       byRehearsal.add(RehearsalSummary(rehearsal: reh, present: p, unjustified: f, justified: j));
     }
@@ -278,36 +350,47 @@ class ReportsController extends Cubit<ReportsState> {
     for (final p in people) {
       final tuple = personCounters[p.id] ?? (0,0,0);
       if (!newFilters.onlyWithRecords || (tuple.$1 + tuple.$2 + tuple.$3) > 0) {
-        byPerson.add(PersonSummary(
-          person: p, present: tuple.$1, unjustified: tuple.$2, justified: tuple.$3,
+        byPerson.add(PersonSummary.fromMarks(
+          person: p,
+          marks: personMarks[p.id] ?? const [],
         ));
         if ((tuple.$1 + tuple.$2 + tuple.$3) > 0) coveredIds.add(p.id);
       }
     }
 
     // Overview KPIs
-    final totalP = byRehearsal.fold<int>(0, (acc, e) => acc + e.present);
-    final totalF = byRehearsal.fold<int>(0, (acc, e) => acc + e.unjustified);
-    final totalJ = byRehearsal.fold<int>(0, (acc, e) => acc + e.justified);
-    final totalMarked = totalP + totalF + totalJ;
-    final double attendanceRate =
-    totalMarked == 0 ? 0.0 : totalP / totalMarked;
-
+    final totals = ReportPeriodTotals.fromSummaries(
+      events: byRehearsal,
+      uniqueParticipantCount: coveredIds.length,
+    );
     final double justificationRate =
-    (totalF + totalJ) == 0 ? 0.0 : totalJ / (totalF + totalJ);
+    (totals.unjustifiedCount + totals.justifiedCount) == 0
+        ? 0.0
+        : totals.justifiedCount / (totals.unjustifiedCount + totals.justifiedCount);
 
     byPerson.sort((a,b) => b.attendanceRate.compareTo(a.attendanceRate));
-    byRehearsal.sort((a,b) => a.rehearsal.dateTime.compareTo(b.rehearsal.dateTime));
+    byRehearsal.sort((a, b) => b.rehearsal.dateTime.compareTo(a.rehearsal.dateTime));
 
     emit(state.copyWith(
       loading: false,
       byPerson: byPerson,
       byRehearsal: byRehearsal,
-      totalRehearsals: inRange.length,
-      attendanceRate: attendanceRate,
+      totalRehearsals: totals.eventCount,
+      attendanceRate: totals.attendanceRate,
       justificationRate: justificationRate,
-      peopleCovered: coveredIds.length,
+      peopleCovered: totals.uniqueParticipantCount,
+      presentCount: totals.presentCount,
+      unjustifiedCount: totals.unjustifiedCount,
+      justifiedCount: totals.justifiedCount,
+      clearError: true,
     ));
+    } catch (e, st) {
+      debugPrint('[Reports] falha ao carregar: $e\n$st');
+      emit(state.copyWith(
+        loading: false,
+        errorMessage: 'Não foi possível carregar os relatórios.',
+      ));
+    }
   }
 
   /// CSV simples para qualquer aba — retorna string pronta para gravar em arquivo.

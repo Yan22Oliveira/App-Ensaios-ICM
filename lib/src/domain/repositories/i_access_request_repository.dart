@@ -25,6 +25,12 @@ abstract class IAccessRequestRepository {
   /// Stream com as solicitações pendentes (para admin/maanaim).
   Stream<List<AccessRequest>> watchPending({int? limit});
 
+  /// Solicitações já aprovadas (para reconciliar com `users`).
+  Future<List<AccessRequest>> listApproved();
+
+  /// Todas as solicitações (qualquer status).
+  Future<List<AccessRequest>> listAll();
+
   /// Contador reativo de pendências (para badge na Home).
   Stream<int> watchPendingCount();
 

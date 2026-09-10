@@ -10,31 +10,22 @@ class AccessRequestsView extends StatelessWidget {
   Widget build(BuildContext context) {
     final repo = context.read<IAccessRequestRepository>();
 
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: AppTheme.primary,
-        title: const Text(
-          'Solicitações de acesso',
-          style: TextStyle(fontWeight: FontWeight.w700),
-        ),
-      ),
-      body: StreamBuilder<List<AccessRequest>>(
-        stream: repo.watchPending(),
-        builder: (context, snap) {
-          if (!snap.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          final items = snap.data!;
-          if (items.isEmpty) return const _EmptyState();
+    return StreamBuilder<List<AccessRequest>>(
+      stream: repo.watchPending(),
+      builder: (context, snap) {
+        if (!snap.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        final items = snap.data!;
+        if (items.isEmpty) return const _EmptyState();
 
-          return ListView.separated(
-            padding: const EdgeInsets.all(16),
-            itemCount: items.length,
-            itemBuilder: (_, i) => _RequestCard(req: items[i]),
-            separatorBuilder: (_, __) => const SizedBox(height: 12),
-          );
-        },
-      ),
+        return ListView.separated(
+          padding: const EdgeInsets.all(16),
+          itemCount: items.length,
+          itemBuilder: (_, i) => _RequestCard(req: items[i]),
+          separatorBuilder: (_, __) => const SizedBox(height: 12),
+        );
+      },
     );
   }
 }

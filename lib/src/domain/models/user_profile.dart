@@ -36,6 +36,17 @@ String roleToString(UserRole r) {
   }
 }
 
+extension UserRoleLabel on UserRole {
+  String get label => switch (this) {
+        UserRole.admin => 'Administrador',
+        UserRole.maanaim => 'Maanaim',
+        UserRole.region => 'Região',
+        UserRole.area => 'Área',
+        UserRole.polo => 'Polo',
+        UserRole.readonly => 'Somente leitura',
+      };
+}
+
 class UserProfile extends Equatable {
   final String uid;
   final String displayName;
